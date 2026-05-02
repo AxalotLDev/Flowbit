@@ -1,4 +1,3 @@
-use tauri::command;
 use reqwest::Client;
 use serde::Serialize;
 
