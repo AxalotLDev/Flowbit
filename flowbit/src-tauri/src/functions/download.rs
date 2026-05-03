@@ -32,6 +32,64 @@ pub enum DownloadMode {
     Audio,
 }
 
+#[derive(Deserialize, Copy, Clone, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum VideoCodec {
+    #[default]
+    Auto,
+    H264,
+    H265,
+    Vp9,
+    Av1,
+}
+
+#[derive(Deserialize, Copy, Clone, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum AudioCodec {
+    #[default]
+    Auto,
+    Mp3,
+    Aac,
+    Opus,
+    Flac
+}
+
+impl VideoCodec {
+    fn as_vcodec(self) -> Option<&'static str> {
+        match self {
+            Self::Auto => None,
+
+            // NVIDIA NVENC (GPU)
+            Self::H264 => Some("h264_nvenc"),
+            Self::H265 => Some("hevc_nvenc"),
+            Self::Av1 => Some("av1_nvenc"),
+            // Intel/AMD VAAPI (если нужно)
+            Self::Vp9 => Some("vp9_vaapi")
+        }
+    }
+}
+
+impl AudioCodec {
+    fn as_acodec(self) -> Option<&'static str> {
+        match self {
+            Self::Auto => None,
+            Self::Mp3 => Some("mp3"),
+            Self::Aac => Some("aac"),
+            Self::Opus => Some("opus"),
+            Self::Flac => Some("flac")
+        }
+    }
+
+    fn as_audio_format(self) -> &'static str {
+        match self {
+            Self::Auto | Self::Mp3 => "mp3",
+            Self::Aac => "aac",
+            Self::Opus => "opus",
+            Self::Flac => "flac"
+        }
+    }
+}
+
 #[inline]
 fn ytdlp_bin() -> &'static str {
     "libs/yt-dlp"
@@ -108,9 +166,9 @@ fn file_mb(len: u64) -> f64 {
     len as f64 / 1_048_576.0
 }
 
-async fn run_ytdlp(args: &[&str]) -> Result<std::process::ExitStatus, String> {
+async fn run_ytdlp(args: Vec<String>) -> Result<std::process::ExitStatus, String> {
     Command::new(ytdlp_bin())
-        .args(args)
+        .args(&args)
         .status()
         .await
         .map_err(|e| format!("yt-dlp failed: {e}"))
@@ -122,6 +180,8 @@ pub async fn download_video(
     path: Option<String>,
     quality: Option<Quality>,
     mode: Option<DownloadMode>,
+    video_codec: Option<VideoCodec>,
+    audio_codec: Option<AudioCodec>,
 ) -> Result<DownloadResult, String> {
     let out_dir = path
         .map(PathBuf::from)
@@ -133,7 +193,7 @@ pub async fn download_video(
         .map_err(|e| format!("Cannot create directory: {e}"))?;
 
     if matches!(mode, Some(DownloadMode::Audio)) {
-        return download_audio(&url, &out_dir).await;
+        return download_audio(&url, &out_dir, audio_codec.unwrap_or_default()).await;
     }
 
     let title = fetch_title(&url).await?;
@@ -145,22 +205,38 @@ pub async fn download_video(
     }
 
     let format = quality_to_format(quality.unwrap_or(Quality::Best));
+    let out_tmpl = out_dir
+        .join(format!("{filename}.%(ext)s"))
+        .to_string_lossy()
+        .into_owned();
 
-    let out_tmpl = out_dir.join(format!("{filename}.%(ext)s"));
+    let mut args: Vec<String> = vec![
+        "-f".into(),
+        format.into(),
+        "--merge-output-format".into(),
+        "mp4".into(),
+        "--ffmpeg-location".into(),
+        "libs/ffmpeg".into(),
+        "--no-playlist".into(),
+    ];
 
-    let status = run_ytdlp(&[
-        "-f",
-        format,
-        "--merge-output-format",
-        "mp4",
-        "--ffmpeg-location",
-        "libs/ffmpeg",
-        "--no-playlist",
-        "-o",
-        out_tmpl.to_str().unwrap(),
-        &url,
-    ])
-    .await?;
+    // Video codec remux/re-encode
+    if let Some(vcodec) = video_codec.unwrap_or_default().as_vcodec() {
+        args.push("-S".into());
+        args.push(format!("vcodec:{vcodec}"));
+    }
+
+    // Audio codec remux/re-encode
+    if let Some(acodec) = audio_codec.unwrap_or_default().as_acodec() {
+        args.push("--postprocessor-args".into());
+        args.push(format!("ffmpeg:-acodec {acodec}"));
+    }
+
+    args.push("-o".into());
+    args.push(out_tmpl);
+    args.push(url.clone());
+
+    let status = run_ytdlp(args).await?;
 
     cleanup_temp(&out_dir).await;
 
@@ -182,39 +258,62 @@ pub async fn download_video(
     })
 }
 
-async fn download_audio(url: &str, out_dir: &Path) -> Result<DownloadResult, String> {
+async fn download_audio(
+    url: &str,
+    out_dir: &Path,
+    codec: AudioCodec,
+) -> Result<DownloadResult, String> {
     let title = fetch_title(url).await?;
     let filename = sanitize_filename(&title);
 
-    let out_file = out_dir.join(format!("{filename}.mp3"));
-    if out_file.exists() {
-        return Err("File already exists".into());
-    }
+    let out_tmpl = out_dir
+        .join(format!("{filename}.%(ext)s"))
+        .to_string_lossy()
+        .into_owned();
 
-    let out_tmpl = out_dir.join(format!("{filename}.%(ext)s"));
+    let args: Vec<String> = vec![
+        "-f".into(),
+        "bestaudio".into(),
+        "-x".into(),
+        "--audio-format".into(),
+        codec.as_audio_format().into(),
+        "--audio-quality".into(),
+        "0".into(),
+        "--ffmpeg-location".into(),
+        "libs/ffmpeg".into(),
+        "--no-playlist".into(),
+        "-o".into(),
+        out_tmpl,
+        "--print".into(),
+        "after_move:filepath".into(),
+        url.to_string(),
+    ];
 
-    let status = run_ytdlp(&[
-        "-f",
-        "bestaudio",
-        "-x",
-        "--audio-format",
-        "mp3",
-        "--audio-quality",
-        "0",
-        "--ffmpeg-location",
-        "libs/ffmpeg",
-        "--no-playlist",
-        "-o",
-        out_tmpl.to_str().unwrap(),
-        url,
-    ])
-    .await?;
+    let output = Command::new(ytdlp_bin())
+        .args(&args)
+        .output()
+        .await
+        .map_err(|e| format!("yt-dlp failed: {e}"))?;
 
     cleanup_temp(out_dir).await;
 
-    if !status.success() {
+    if !output.status.success() {
         return Err("Audio download failed".into());
     }
+
+    // 👉 yt-dlp возвращает реальный путь файла
+    let real_path = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .last()
+        .unwrap_or("")
+        .trim()
+        .to_string();
+
+    if real_path.is_empty() {
+        return Err("Cannot resolve output file path from yt-dlp".into());
+    }
+
+    let out_file = PathBuf::from(&real_path);
 
     let meta = tokio::fs::metadata(&out_file)
         .await

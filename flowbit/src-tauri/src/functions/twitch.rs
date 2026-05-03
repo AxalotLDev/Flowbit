@@ -4,6 +4,7 @@ use serde_json::Value;
 use std::path::{Path, PathBuf};
 use tauri::State;
 use tokio::process::Command;
+use crate::functions::download::DownloadResult;
 
 #[derive(Serialize, Clone)]
 pub struct TwitchVideoInfo {
@@ -15,11 +16,6 @@ pub struct TwitchVideoInfo {
     pub view_count: Option<u64>,
 }
 
-#[derive(Serialize, Clone)]
-pub struct TwitchDownloadResult {
-    pub path: String,
-    pub file_size_mb: f64,
-}
 
 pub struct TwitchDownloadState;
 impl TwitchDownloadState {
@@ -56,6 +52,61 @@ impl TwitchQuality {
 pub enum DownloadMode {
     Video,
     Audio,
+}
+
+#[derive(Deserialize, Copy, Clone, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum VideoCodec {
+    #[default]
+    Auto,
+    H264,
+    H265,
+    Vp9,
+    Av1,
+}
+
+#[derive(Deserialize, Copy, Clone, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum AudioCodec {
+    #[default]
+    Auto,
+    Mp3,
+    Aac,
+    Opus,
+    Flac
+}
+
+impl VideoCodec {
+    fn as_vcodec(self) -> Option<&'static str> {
+        match self {
+            Self::Auto => None,
+            Self::H264 => Some("h264"),
+            Self::H265 => Some("hevc"),
+            Self::Vp9 => Some("vp9"),
+            Self::Av1 => Some("av1"),
+        }
+    }
+}
+
+impl AudioCodec {
+    fn as_acodec(self) -> Option<&'static str> {
+        match self {
+            Self::Auto => None,
+            Self::Mp3 => Some("mp3"),
+            Self::Aac => Some("aac"),
+            Self::Opus => Some("opus"),
+            Self::Flac => Some("flac")
+        }
+    }
+
+    fn as_audio_format(self) -> &'static str {
+        match self {
+            Self::Auto | Self::Mp3 => "mp3",
+            Self::Aac => "aac",
+            Self::Opus => "opus",
+            Self::Flac => "flac"
+        }
+    }
 }
 
 #[inline]
@@ -120,15 +171,6 @@ async fn cleanup_temp(dir: &Path) {
         }
     }
 }
-
-async fn run_ytdlp(args: &[&str]) -> Result<std::process::ExitStatus, String> {
-    Command::new(ytdlp_bin())
-        .args(args)
-        .status()
-        .await
-        .map_err(|e| format!("yt-dlp error: {e}"))
-}
-
 pub async fn fetch_json(url: &str) -> Result<Value, String> {
     let out = Command::new(ytdlp_bin())
         .args(["--dump-json", "--no-playlist", url])
@@ -150,7 +192,9 @@ pub async fn download_twitch(
     path: Option<String>,
     quality: Option<TwitchQuality>,
     mode: Option<DownloadMode>,
-) -> Result<TwitchDownloadResult, String> {
+    video_codec: Option<VideoCodec>,
+    audio_codec: Option<AudioCodec>,
+) -> Result<DownloadResult, String> {
     let out_dir = path.map(PathBuf::from).unwrap_or_else(default_downloads);
 
     tokio::fs::create_dir_all(&out_dir)
@@ -161,47 +205,85 @@ pub async fn download_twitch(
     let name = sanitize(&info.title);
 
     let is_audio = matches!(mode, Some(DownloadMode::Audio));
-    let ext = if is_audio { "mp3" } else { "mp4" };
 
-    let out_file = out_dir.join(format!("{name}.{ext}"));
-    if out_file.exists() {
-        return Err("File already exists".into());
+    let out_tmpl = out_dir
+        .join(format!("{name}.%(ext)s"))
+        .to_string_lossy()
+        .into_owned();
+
+    let mut args: Vec<String> = vec![
+        "-o".into(),
+        out_tmpl,
+        "--no-playlist".into(),
+        "--print".into(),
+        "after_move:filepath".into(),
+    ];
+
+    if is_audio {
+        let acodec = audio_codec.unwrap_or_default();
+
+        args.extend(vec![
+            "-f".into(),
+            "bestaudio".into(),
+            "-x".into(),
+            "--audio-format".into(),
+            acodec.as_audio_format().into(),
+            "--audio-quality".into(),
+            "0".into(),
+        ]);
+    } else {
+        let vcodec = video_codec.unwrap_or_default();
+        let acodec = audio_codec.unwrap_or_default();
+
+        args.extend(vec![
+            "-f".into(),
+            quality.unwrap_or(TwitchQuality::Best).fmt().into(),
+            "--merge-output-format".into(),
+            "mp4".into(),
+        ]);
+
+        // ❗ FIX: один postprocessor args (объединяем)
+        let mut pp = String::from("ffmpeg:");
+
+        if let Some(vc) = vcodec.as_vcodec() {
+            pp.push_str(&format!(" -vcodec {vc}"));
+        }
+
+        if let Some(ac) = acodec.as_acodec() {
+            pp.push_str(&format!(" -acodec {ac}"));
+        }
+
+        args.push("--postprocessor-args".into());
+        args.push(pp);
     }
 
-    let out_tmpl = out_dir.join(format!("{name}.%(ext)s"));
+    args.push(url.clone());
 
-    let status = if is_audio {
-        run_ytdlp(&[
-            "-f",
-            "bestaudio",
-            "-x",
-            "--audio-format",
-            "mp3",
-            "--audio-quality",
-            "0",
-            "-o",
-            out_tmpl.to_str().unwrap(),
-            &url,
-        ])
-        .await?
-    } else {
-        run_ytdlp(&[
-            "-f",
-            quality.unwrap_or(TwitchQuality::Best).fmt(),
-            "--merge-output-format",
-            "mp4",
-            "-o",
-            out_tmpl.to_str().unwrap(),
-            &url,
-        ])
-        .await?
-    };
+    let output = Command::new(ytdlp_bin())
+        .args(&args)
+        .output()
+        .await
+        .map_err(|e| format!("yt-dlp failed: {e}"))?;
 
     cleanup_temp(&out_dir).await;
 
-    if !status.success() {
+    if !output.status.success() {
         return Err("yt-dlp failed".into());
     }
+
+    // 💥 FIX: реальный файл вместо угадывания
+    let real_path = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .last()
+        .unwrap_or("")
+        .trim()
+        .to_string();
+
+    if real_path.is_empty() {
+        return Err("Cannot resolve output file path".into());
+    }
+
+    let out_file = PathBuf::from(real_path);
 
     let meta = tokio::fs::metadata(&out_file)
         .await
@@ -211,7 +293,7 @@ pub async fn download_twitch(
         return Err("Empty file".into());
     }
 
-    Ok(TwitchDownloadResult {
+    Ok(DownloadResult {
         path: out_file.to_string_lossy().into(),
         file_size_mb: mb(meta.len()),
     })
