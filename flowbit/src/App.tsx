@@ -1,342 +1,314 @@
 import "./App.css";
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { listen, UnlistenFn } from "@tauri-apps/api/event";
 
-// ──────────────────────────────────────────────
-// Types
-// ──────────────────────────────────────────────
+type Platform     = "youtube" | "twitch" | null;
+type Quality      = "best" | "high" | "medium" | "low" | "worst";
+type DownloadMode = "video" | "audio";
 
-type Platform = "youtube" | "twitch" | null;
+interface YoutubeInfo    { title: string; author_name: string; html: string; }
+interface TwitchInfo     { title: string; channel: string; duration: number | null; is_live: boolean; thumbnail_url: string | null; }
+interface DownloadResult { path: string; file_size_mb: number; }
 
-interface DownloadProgress {
-  percent: number;
-  speed: string;
-  downloaded_bytes: number;
-  total_bytes: number;
+function formatDuration(s: number) {
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
+  return h > 0
+      ? `${h}:${String(m).padStart(2,"0")}:${String(sec).padStart(2,"0")}`
+      : `${m}:${String(sec).padStart(2,"0")}`;
 }
 
-interface DownloadResult {
-  path: string;
-  file_size_bytes: number;
-}
+const QUALITIES: { value: Quality; label: string }[] = [
+  { value: "best",   label: "Лучшее" },
+  { value: "high",   label: "1080p"  },
+  { value: "medium", label: "720p"   },
+  { value: "low",    label: "480p"   },
+  { value: "worst",  label: "Худшее" },
+];
 
-interface YoutubeInfo {
-  title: string;
-  author_name: string;
-  html: string;
-  [key: string]: unknown;
-}
+const SearchIcon = () => (
+    <svg viewBox="0 0 24 24" fill="none" strokeWidth="2" stroke="currentColor">
+      <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+    </svg>
+);
 
-interface TwitchInfo {
-  title: string;
-  channel: string;
-  duration: number | null;
-  is_live: boolean;
-  thumbnail_url: string | null;
-  view_count: number | null;
-}
-
-interface DownloadError {
-  message: string;
-  hint: string;
-}
-
-// ──────────────────────────────────────────────
-// Helpers
-// ──────────────────────────────────────────────
-
-function classifyError(msg: string): string {
-  if (msg.includes("ffmpeg") || msg.includes("FFmpeg"))
-    return "FFmpeg не найден или неправильно настроен. Проверьте путь libs/ffmpeg.";
-  if (msg.includes("yt-dlp"))
-    return "Проблема с yt-dlp. Проверьте бинарный файл libs/yt-dlp.";
-  if (msg.includes("permission") || msg.includes("Permission"))
-    return "Нет прав на запись в папку загрузок.";
-  if (msg.includes("disk") || msg.includes("space") || msg.includes("No space"))
-    return "Ошибка диска. Проверьте свободное место.";
-  if (msg.includes("network") || msg.includes("connection") || msg.includes("timeout"))
-    return "Проблема с сетью. Проверьте интернет-соединение.";
-  if (msg.includes("subscriber") || msg.includes("expired"))
-    return "VOD недоступен — возможно, только для подписчиков или удалён.";
-  if (msg.includes("private") || msg.includes("unavailable"))
-    return "Видео недоступно или является приватным.";
-  if (msg.includes("cancelled") || msg.includes("canceled"))
-    return "Загрузка была отменена пользователем.";
-  return "Проверьте логи приложения для получения подробностей.";
-}
-
-function formatBytes(bytes: number): string {
-  if (bytes === 0) return "—";
-  if (bytes >= 1024 ** 3) return `${(bytes / 1024 ** 3).toFixed(2)} GB`;
-  if (bytes >= 1024 ** 2) return `${(bytes / 1024 ** 2).toFixed(1)} MB`;
-  if (bytes >= 1024) return `${(bytes / 1024).toFixed(0)} KB`;
-  return `${bytes} B`;
-}
-
-function formatDuration(seconds: number): string {
-  const h = Math.floor(seconds / 3600);
-  const m = Math.floor((seconds % 3600) / 60);
-  const s = seconds % 60;
-  if (h > 0) return `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
-  return `${m}:${String(s).padStart(2, "0")}`;
-}
-
-// ──────────────────────────────────────────────
-// Component
-// ──────────────────────────────────────────────
+const VideoIcon = () => (
+    <svg viewBox="0 0 24 24" fill="none" strokeWidth="1.5" stroke="currentColor">
+      <path d="M15 10l4.553-2.07A1 1 0 0121 8.81v6.38a1 1 0 01-1.447.9L15 14"/>
+      <rect x="3" y="6" width="12" height="12" rx="2"/>
+    </svg>
+);
 
 export default function App() {
-  const [url, setUrl]                         = useState("");
-  const [platform, setPlatform]               = useState<Platform>(null);
+  const [url, setUrl]                 = useState("");
+  const [platform, setPlatform]       = useState<Platform>(null);
+  const [youtubeInfo, setYoutubeInfo] = useState<YoutubeInfo | null>(null);
+  const [twitchInfo, setTwitchInfo]   = useState<TwitchInfo | null>(null);
+  const [quality, setQuality]         = useState<Quality>("best");
+  const [mode, setMode]               = useState<DownloadMode>("video");
+  const [urlError, setUrlError]       = useState("");
+  const [downloading, setDownloading] = useState(false);
+  const [result, setResult]           = useState<DownloadResult | null>(null);
+  const [error, setError]             = useState("");
+  const [loadingInfo, setLoadingInfo] = useState(false);
 
-  // Info
-  const [youtubeInfo, setYoutubeInfo]         = useState<YoutubeInfo | null>(null);
-  const [twitchInfo, setTwitchInfo]           = useState<TwitchInfo | null>(null);
+  // Реф для отмены устаревших запросов
+  const abortRef = useRef<AbortController | null>(null);
 
-  // Status
-  const [urlError, setUrlError]               = useState("");
-  const [downloadError, setDownloadError]     = useState<DownloadError | null>(null);
-  const [downloading, setDownloading]         = useState(false);
-  const [done, setDone]                       = useState(false);
-  const [result, setResult]                   = useState<DownloadResult | null>(null);
-  const [progress, setProgress]               = useState<DownloadProgress>({
-    percent: 0, speed: "—", downloaded_bytes: 0, total_bytes: 0,
-  });
-
-  // ── Event listeners ──────────────────────────
   useEffect(() => {
-    const unsubs: UnlistenFn[] = [];
+    // Отменяем предыдущий запрос
+    abortRef.current?.abort();
 
-    // YouTube events
-    listen<DownloadProgress>("download-progress", (e) => {
-      setProgress(e.payload);
-      setDownloadError(null);
-      if (e.payload.percent >= 100) { setDone(true); setDownloading(false); }
-    }).then((fn) => unsubs.push(fn));
-
-    listen<string>("download-error", (e) => {
-      setDownloadError({ message: e.payload, hint: classifyError(e.payload) });
-      setDownloading(false);
-    }).then((fn) => unsubs.push(fn));
-
-    // Twitch events
-    listen<DownloadProgress>("twitch-progress", (e) => {
-      setProgress(e.payload);
-      setDownloadError(null);
-      if (e.payload.percent >= 100) { setDone(true); setDownloading(false); }
-    }).then((fn) => unsubs.push(fn));
-
-    listen<{ message: string; error_type: string }>("twitch-error", (e) => {
-      const msg = e.payload.message;
-      setDownloadError({ message: msg, hint: classifyError(msg) });
-      setDownloading(false);
-    }).then((fn) => unsubs.push(fn));
-
-    return () => unsubs.forEach((fn) => fn());
-  }, []);
-
-  // ── URL detection + info fetch ────────────────
-  useEffect(() => {
     if (!url.trim()) {
-      resetInfo();
+      resetAll();
       return;
     }
 
+    // Сбрасываем карточку и ошибку, но спиннер НЕ трогаем здесь
+    setYoutubeInfo(null);
+    setTwitchInfo(null);
+    setPlatform(null);
+    setUrlError("");
+    setResult(null);
+    setError("");
+
+    const controller = new AbortController();
+    abortRef.current = controller;
+
     const timer = setTimeout(async () => {
-      resetInfo();
+      // Показываем спиннер только когда debounce сработал
+      setLoadingInfo(true);
 
       try {
-        // Detect platform first — two parallel checks
         const [isYt, isTw] = await Promise.all([
           invoke<boolean>("is_youtube_url", { text: url }),
           invoke<boolean>("is_twitch_url",  { text: url }),
         ]);
 
+        if (controller.signal.aborted) return;
+
         if (isYt) {
           setPlatform("youtube");
           const info = await invoke<YoutubeInfo>("get_youtube_info", { url });
-          setYoutubeInfo(info);
+          if (!controller.signal.aborted) setYoutubeInfo(info);
         } else if (isTw) {
           setPlatform("twitch");
           const info = await invoke<TwitchInfo>("get_twitch_info", { url });
-          setTwitchInfo(info);
+          if (!controller.signal.aborted) setTwitchInfo(info);
         } else {
-          setUrlError("Неверный URL — поддерживаются YouTube и Twitch");
+          if (!controller.signal.aborted)
+            setUrlError(" Неверный URL — поддерживаются YouTube и Twitch");
         }
-      } catch (e) {
-        console.error("[get_info]", e);
-        setUrlError("Не удалось получить информацию о видео");
+      } catch {
+        if (!controller.signal.aborted)
+          setUrlError("Не удалось получить информацию о видео");
+      } finally {
+        if (!controller.signal.aborted) setLoadingInfo(false);
       }
     }, 600);
 
-    return () => clearTimeout(timer);
+    return () => {
+      clearTimeout(timer);
+      controller.abort();
+      // Спиннер гасим при cleanup — запрос отменён
+      setLoadingInfo(false);
+    };
   }, [url]);
 
-  function resetInfo() {
-    setYoutubeInfo(null);
-    setTwitchInfo(null);
-    setPlatform(null);
-    setUrlError("");
-    setDone(false);
-    setDownloadError(null);
-    setResult(null);
+  function resetAll() {
+    setYoutubeInfo(null); setTwitchInfo(null);
+    setPlatform(null); setUrlError("");
+    setResult(null); setError("");
+    setLoadingInfo(false);
   }
 
-  // ── Download ──────────────────────────────────
   const handleDownload = useCallback(async () => {
-    if (!url || downloading || !platform) return;
-
-    setDownloading(true);
-    setDone(false);
-    setResult(null);
-    setDownloadError(null);
-    setProgress({ percent: 0, speed: "—", downloaded_bytes: 0, total_bytes: 0 });
-
+    if (!platform || downloading) return;
+    setDownloading(true); setResult(null); setError("");
     try {
-      const command = platform === "twitch" ? "download_twitch" : "download_video";
-      const res = await invoke<DownloadResult>(command, { url });
+      const cmd = platform === "twitch" ? "download_twitch" : "download_video";
+      const res = await invoke<DownloadResult>(cmd, { url, quality, mode });
       setResult(res);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message
-          : typeof err === "string" ? err
-              : JSON.stringify(err);
-      setDownloadError({ message: msg, hint: classifyError(msg) });
+    } catch (e) {
+      setError(typeof e === "string" ? e : String(e));
     } finally {
       setDownloading(false);
     }
-  }, [url, downloading, platform]);
+  }, [url, platform, quality, mode, downloading]);
 
-  // ── Cancel ────────────────────────────────────
-  const handleCancel = useCallback(async () => {
-    if (!url || !platform) return;
-    const command = platform === "twitch" ? "cancel_twitch_download" : "cancel_download";
-    await invoke(command, { url }).catch(console.error);
-  }, [url, platform]);
-
-  // ──────────────────────────────────────────────
-  // Derived
-  // ──────────────────────────────────────────────
-  const hasInfo  = youtubeInfo !== null || twitchInfo !== null;
-  const title    = youtubeInfo?.title    ?? twitchInfo?.title    ?? "";
-  const subtitle = youtubeInfo
+  const hasInfo = youtubeInfo !== null || twitchInfo !== null;
+  const title   = youtubeInfo?.title ?? twitchInfo?.title ?? "";
+  const sub     = youtubeInfo
       ? `Автор: ${youtubeInfo.author_name}`
       : twitchInfo
-          ? `${twitchInfo.channel}${twitchInfo.is_live ? " 🔴 Live" : ""}${twitchInfo.duration ? "  ·  " + formatDuration(twitchInfo.duration) : ""}`
+          ? [
+            twitchInfo.channel,
+            twitchInfo.is_live ? "🔴 Live" : "",
+            twitchInfo.duration ? formatDuration(twitchInfo.duration) : "",
+          ].filter(Boolean).join("  ·  ")
           : "";
 
-  // ──────────────────────────────────────────────
-  // Render
-  // ──────────────────────────────────────────────
+  const downloadLabel = () => {
+    if (downloading) return <><span className="spinner" />Загружается…</>;
+    if (twitchInfo?.is_live) return mode === "audio" ? "Записать аудио" : "Записать стрим";
+    return mode === "audio" ? "Скачать аудио" : "Скачать видео";
+  };
+
   return (
-      <main className="container">
-        <input
-            placeholder="Вставьте YouTube или Twitch URL"
-            type="text"
-            value={url}
-            onChange={(e) => setUrl(e.target.value)}
-            disabled={downloading}
-        />
+      <main className="app">
 
-        <hr />
+        <div className="logo">
+          <div className="logo-icon">
+            <svg viewBox="0 0 24 24">
+              <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 14.5v-9l6 4.5-6 4.5z"/>
+            </svg>
+          </div>
+          <span className="logo-name">Flowbit</span>
+          <span className="logo-tag">beta</span>
+        </div>
 
-        {/* URL error */}
-        {urlError && <p className="error-message">{urlError}</p>}
+        <div className="search-box">
+          <div className="search-icon"><SearchIcon /></div>
+          <input
+              className={`url-input${urlError ? " url-input--error" : ""}`}
+              placeholder="Вставьте YouTube или Twitch URL…"
+              value={url}
+              onChange={e => setUrl(e.target.value)}
+              disabled={downloading}
+          />
+          {loadingInfo && <div className="search-spinner" />}
+        </div>
 
-        {/* Download error */}
-        {downloadError && (
-            <div className="download-error">
-              <p className="error-title">❌ Ошибка загрузки</p>
-              <p className="error-message">{downloadError.message}</p>
-              <details className="error-details">
-                <summary>Подробнее</summary>
-                <p>{downloadError.hint}</p>
-                <ul className="error-help">
-                  <li>Проверьте интернет-соединение</li>
-                  <li>Убедитесь, что видео общедоступно</li>
-                  <li>Проверьте свободное место на диске</li>
-                  <li>Перезапустите приложение</li>
-                </ul>
-              </details>
+        {urlError && (
+            <p className="url-error">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="13" height="13">
+                <circle cx="12" cy="12" r="10"/>
+                <line x1="12" y1="8" x2="12" y2="12"/>
+                <line x1="12" y1="16" x2="12.01" y2="16"/>
+              </svg>
+              {urlError}
+            </p>
+        )}
+
+        {!hasInfo && !urlError && !loadingInfo && (
+            <div className="empty-state">
+              <VideoIcon />
+              <p>Поддерживается YouTube и Twitch<br/>Вставьте ссылку выше для начала</p>
             </div>
         )}
 
-        {/* Info card */}
+        {loadingInfo && (
+            <div className="card skeleton-card">
+              <div className="skeleton-header">
+                <div className="skeleton skeleton-badge" />
+                <div className="skeleton skeleton-title" />
+                <div className="skeleton skeleton-sub" />
+              </div>
+              <div className="skeleton skeleton-thumb" />
+            </div>
+        )}
+
         {hasInfo && (
-            <div className="video-info">
-              {/* Platform badge */}
-              <span className={`platform-badge platform-badge--${platform}`}>
-            {platform === "twitch" ? "Twitch" : "YouTube"}
-          </span>
+            <div className="card">
+              <div className="card-header">
+            <span className={`badge badge-${platform}`}>
+              {platform === "twitch" ? "Twitch" : "YouTube"}
+            </span>
+                <h2 className="card-title">{title}</h2>
+                <p className="card-sub">{sub}</p>
+              </div>
 
-              <h3>{title}</h3>
-              <p className="video-author">{subtitle}</p>
-
-              {/* YouTube embed */}
               {youtubeInfo && (
-                  <div className="video-wrapper">
-                    <div dangerouslySetInnerHTML={{ __html: youtubeInfo.html }} />
-                  </div>
+                  <div className="embed-wrap"
+                       dangerouslySetInnerHTML={{ __html: youtubeInfo.html }} />
               )}
-
-              {/* Twitch thumbnail */}
               {twitchInfo?.thumbnail_url && (
-                  <div className="video-wrapper">
-                    <img
-                        src={twitchInfo.thumbnail_url}
-                        alt={twitchInfo.title}
-                        className="twitch-thumbnail"
-                    />
+                  <div className="thumb-wrap">
+                    <img src={twitchInfo.thumbnail_url} alt={twitchInfo.title} />
                   </div>
               )}
 
-              {/* Progress */}
-              {(downloading || done) && (
-                  <div className="progress-wrapper">
-                    <div className="progress-bar-track">
-                      <div
-                          className="progress-bar-fill"
-                          style={{ width: `${progress.percent}%` }}
-                      />
-                    </div>
-                    <div className="progress-meta">
-                      <span>{Math.round(progress.percent)}%</span>
-                      {progress.total_bytes > 0 ? (
-                          <span>
-                    {formatBytes(progress.downloaded_bytes)} / {formatBytes(progress.total_bytes)}
-                  </span>
-                      ) : (
-                          <span>{progress.speed}</span>
-                      )}
-                      {done
-                          ? <span className="done-label">✓ Готово</span>
-                          : <span className="status-label">Загрузка…</span>}
+              <div className="divider" />
+
+              <div className="quality-section">
+                <p className="quality-label">Формат</p>
+                <div className="mode-toggle">
+                  <button
+                      className={`mode-btn${mode === "video" ? " active" : ""}`}
+                      onClick={() => setMode("video")}
+                      disabled={downloading}
+                  >
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14">
+                      <path d="M15 10l4.553-2.07A1 1 0 0121 8.81v6.38a1 1 0 01-1.447.9L15 14"/>
+                      <rect x="3" y="6" width="12" height="12" rx="2"/>
+                    </svg>
+                    Видео
+                  </button>
+                  <button
+                      className={`mode-btn${mode === "audio" ? " active" : ""}`}
+                      onClick={() => setMode("audio")}
+                      disabled={downloading}
+                  >
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14">
+                      <path d="M9 18V5l12-2v13"/>
+                      <circle cx="6" cy="18" r="3"/>
+                      <circle cx="18" cy="16" r="3"/>
+                    </svg>
+                    Только аудио
+                  </button>
+                </div>
+              </div>
+
+              {mode === "video" && (
+                  <div className="quality-section" style={{ paddingTop: 0 }}>
+                    <p className="quality-label">Качество</p>
+                    <div className="quality-pills">
+                      {QUALITIES.map(q => (
+                          <button
+                              key={q.value}
+                              className={`quality-pill${quality === q.value ? " active" : ""}`}
+                              onClick={() => setQuality(q.value)}
+                              disabled={downloading}
+                          >{q.label}</button>
+                      ))}
                     </div>
                   </div>
               )}
 
-              {/* Result */}
+              {error && (
+                  <div className="error-box">
+                    <div className="error-title">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14">
+                        <circle cx="12" cy="12" r="10"/>
+                        <line x1="12" y1="8" x2="12" y2="12"/>
+                        <line x1="12" y1="16" x2="12.01" y2="16"/>
+                      </svg>
+                      Ошибка загрузки
+                    </div>
+                    <p className="error-msg">{error}</p>
+                  </div>
+              )}
+
               {result && (
-                  <div className="saved-path">
-                    <p>✅ Файл сохранён: <strong title={result.path}>{result.path}</strong></p>
-                    <p className="file-size">Размер: {formatBytes(result.file_size_bytes)}</p>
+                  <div className="result-box">
+                    <div className="result-title">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14">
+                        <polyline points="20 6 9 17 4 12"/>
+                      </svg>
+                      Файл сохранён
+                    </div>
+                    <p className="result-path">{result.path}</p>
+                    <p className="result-size">{result.file_size_mb.toFixed(1)} MB</p>
                   </div>
               )}
 
-              {/* Buttons */}
-              <div className="button-row">
-                <button onClick={handleDownload} disabled={downloading}>
-                  {downloading
-                      ? "Загружается…"
-                      : twitchInfo?.is_live
-                          ? "Записать стрим"
-                          : "Скачать"}
+              <div className="card-footer">
+                <button
+                    className="btn-primary"
+                    onClick={handleDownload}
+                    disabled={downloading}
+                >
+                  {downloadLabel()}
                 </button>
-                {downloading && (
-                    <button className="cancel-btn" onClick={handleCancel}>
-                      Отмена
-                    </button>
-                )}
               </div>
             </div>
         )}

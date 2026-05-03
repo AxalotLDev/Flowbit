@@ -1,13 +1,15 @@
-// Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 mod functions;
 use std::path::PathBuf;
 use yt_dlp::Downloader;
 use functions::download::DownloadState;
-use crate::functions::twitch::TwitchDownloadState;
+use functions::twitch::TwitchDownloadState;
 
 #[tauri::command]
 async fn install_dependencies() -> Result<(), String> {
     Downloader::with_new_binaries(PathBuf::from("libs"), PathBuf::from("output"))
+        .await
+        .map_err(|e| e.to_string())?
+        .build()
         .await
         .map_err(|e| e.to_string())?;
     Ok(())
@@ -31,11 +33,9 @@ pub fn run() {
             functions::valid::is_youtube_url,
             functions::get_info::get_youtube_info,
             functions::download::download_video,
-            functions::download::cancel_download,
             functions::twitch::is_twitch_url,
             functions::twitch::get_twitch_info,
             functions::twitch::download_twitch,
-            functions::twitch::cancel_twitch_download,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

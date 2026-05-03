@@ -6,6 +6,8 @@ authors = ["_Axa_lotL_"]
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[env]
+WEBKIT_DISABLE_COMPOSITING_MODE = "1"
 
 [lib]
 # The `_lib` suffix may seem redundant but it is necessary
@@ -18,7 +20,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = [] }
+tauri = { version = "2", features = ["native-tls-vendored"] }
 tauri-plugin-opener = "2"
 
 serde = { version = "1", features = ["derive"] }
@@ -29,6 +31,3 @@ tokio = { version = "1", features = ["full"] }
 
 reqwest = { version = "0.12", features = ["json", "rustls-tls"] }
 yt-dlp = { git = "https://github.com/Guilherme-j10/yt-dlp" }
-
-[target.x86_64-pc-windows-gnu]
-linker = "/usr/bin/x86_64-w64-mingw32-gcc"
