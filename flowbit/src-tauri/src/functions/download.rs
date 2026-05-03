@@ -1,8 +1,6 @@
-use yt_dlp::Downloader;
-use yt_dlp::client::deps::Libraries;
-use yt_dlp::model::selector::{VideoQuality, AudioQuality, VideoCodecPreference};
-use std::path::{PathBuf, Path};
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
+use std::path::{Path, PathBuf};
+use tokio::process::Command;
 
 #[derive(Serialize, Clone)]
 pub struct DownloadResult {
@@ -12,10 +10,12 @@ pub struct DownloadResult {
 
 pub struct DownloadState;
 impl DownloadState {
-    pub fn new() -> Self { Self }
+    pub fn new() -> Self {
+        Self
+    }
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Copy, Clone)]
 #[serde(rename_all = "lowercase")]
 pub enum Quality {
     Best,
@@ -25,185 +25,207 @@ pub enum Quality {
     Worst,
 }
 
-impl Quality {
-    fn to_video_quality(&self) -> VideoQuality {
-        match self {
-            Quality::Best   => VideoQuality::Best,
-            Quality::High   => VideoQuality::High,
-            Quality::Medium => VideoQuality::Medium,
-            Quality::Low    => VideoQuality::Low,
-            Quality::Worst  => VideoQuality::Worst,
-        }
-    }
-}
-
-#[derive(Deserialize)]
+#[derive(Deserialize, Copy, Clone)]
 #[serde(rename_all = "lowercase")]
 pub enum DownloadMode {
     Video,
     Audio,
 }
 
-fn ytdlp_bin() -> PathBuf { PathBuf::from("libs/yt-dlp") }
+#[inline]
+fn ytdlp_bin() -> &'static str {
+    "libs/yt-dlp"
+}
 
-fn default_downloads() -> PathBuf {
-    for var in &["HOME", "USERPROFILE"] {
-        if let Ok(base) = std::env::var(var) {
-            let p = PathBuf::from(base).join("Downloads");
-            if p.exists() { return p; }
-        }
-    }
-    std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+fn default_downloads() -> Option<PathBuf> {
+    dirs::download_dir()
 }
 
 fn sanitize_filename(name: &str) -> String {
-    let s: String = name.chars()
-        .map(|c| match c {
-            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' | '\0' => '_',
-            _ => c,
-        })
-        .collect();
-    let s = s.trim().to_string();
-    if s.is_empty() { return "video".into(); }
-    if s.len() > 200 { s[..200].to_string() } else { s }
+    let mut out = String::with_capacity(name.len());
+
+    for c in name.chars() {
+        match c {
+            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' | '\0' => out.push('_'),
+            _ => out.push(c),
+        }
+    }
+
+    let s = out.trim();
+    if s.is_empty() {
+        return "video".into();
+    }
+
+    if s.len() > 200 {
+        s[..200].to_string()
+    } else {
+        s.to_string()
+    }
+}
+
+#[inline]
+fn quality_to_format(q: Quality) -> &'static str {
+    match q {
+        Quality::Best => "bestvideo+bestaudio/best",
+        Quality::High => "bestvideo[height<=1080]+bestaudio/best[height<=1080]",
+        Quality::Medium => "bestvideo[height<=720]+bestaudio/best[height<=720]",
+        Quality::Low => "bestvideo[height<=480]+bestaudio/best[height<=480]",
+        Quality::Worst => "worst",
+    }
+}
+
+async fn fetch_title(url: &str) -> Result<String, String> {
+    let output = Command::new(ytdlp_bin())
+        .args(["--print", "title", "--no-playlist", url])
+        .output()
+        .await
+        .map_err(|e| format!("Failed to fetch title: {e}"))?;
+
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
 pub async fn cleanup_temp(dir: &Path) {
-    let Ok(mut entries) = tokio::fs::read_dir(dir).await else { return };
+    let Ok(mut entries) = tokio::fs::read_dir(dir).await else {
+        return;
+    };
+
     while let Ok(Some(entry)) = entries.next_entry().await {
         let name = entry.file_name();
         let name = name.to_string_lossy();
-        if name.ends_with(".part")
-            || name.ends_with(".ytdl")
+
+        let should_remove = name.ends_with(".part")
             || name.ends_with(".tmp")
             || name.ends_with(".frag")
-            || name.ends_with(".webm")
-            || name.ends_with(".m4a")
-            || name.starts_with("temp_")
-        {
+            || name.starts_with("temp_");
+
+        if should_remove {
             let _ = tokio::fs::remove_file(entry.path()).await;
         }
     }
 }
 
+fn file_mb(len: u64) -> f64 {
+    len as f64 / 1_048_576.0
+}
+
+async fn run_ytdlp(args: &[&str]) -> Result<std::process::ExitStatus, String> {
+    Command::new(ytdlp_bin())
+        .args(args)
+        .status()
+        .await
+        .map_err(|e| format!("yt-dlp failed: {e}"))
+}
+
 #[tauri::command]
 pub async fn download_video(
-    url:     String,
-    path:    Option<String>,
+    url: String,
+    path: Option<String>,
     quality: Option<Quality>,
-    mode:    Option<DownloadMode>,
+    mode: Option<DownloadMode>,
 ) -> Result<DownloadResult, String> {
-    let out_dir = path.map(PathBuf::from).unwrap_or_else(default_downloads);
+    let out_dir = path
+        .map(PathBuf::from)
+        .or_else(default_downloads)
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| ".".into()));
 
-    tokio::fs::create_dir_all(&out_dir).await
-        .map_err(|e| format!("Cannot create directory: {}", e))?;
+    tokio::fs::create_dir_all(&out_dir)
+        .await
+        .map_err(|e| format!("Cannot create directory: {e}"))?;
 
-    let is_audio = matches!(mode, Some(DownloadMode::Audio));
-
-    // Аудио — напрямую через yt-dlp, минуя библиотеку
-    if is_audio {
-        return download_audio_ytdlp(&url, &out_dir).await;
+    if matches!(mode, Some(DownloadMode::Audio)) {
+        return download_audio(&url, &out_dir).await;
     }
 
-    // Видео — через библиотеку yt-dlp-rs
-    let libraries = Libraries::new(
-        PathBuf::from("libs/yt-dlp"),
-        PathBuf::from("libs/ffmpeg"),
-    );
+    let title = fetch_title(&url).await?;
+    let filename = sanitize_filename(&title);
 
-    let downloader = Downloader::builder(libraries, &out_dir)
-        .build()
-        .await
-        .map_err(|e| format!("Failed to initialize downloader: {}", e))?;
-
-    let video = downloader
-        .fetch_video_infos(url.clone())
-        .await
-        .map_err(|e| format!("Failed to fetch video info: {}", e))?;
-
-    let filename  = sanitize_filename(&video.title);
-    let full_name = format!("{}.mp4", filename);
-    let out_file  = out_dir.join(&full_name);
-
+    let out_file = out_dir.join(format!("{filename}.mp4"));
     if out_file.exists() {
-        return Err(format!("File '{}' already exists.", out_file.display()));
+        return Err("File already exists".into());
     }
 
-    let q = quality.unwrap_or(Quality::Best);
+    let format = quality_to_format(quality.unwrap_or(Quality::Best));
 
-    let video_path = downloader
-        .download(&video, &full_name)
-        .video_quality(q.to_video_quality())
-        .video_codec(VideoCodecPreference::Any)
-        .audio_quality(AudioQuality::Best)
-        .execute()
-        .await
-        .map_err(|e| format!("Download failed: {}", e))?;
+    let out_tmpl = out_dir.join(format!("{filename}.%(ext)s"));
+
+    let status = run_ytdlp(&[
+        "-f",
+        format,
+        "--merge-output-format",
+        "mp4",
+        "--ffmpeg-location",
+        "libs/ffmpeg",
+        "--no-playlist",
+        "-o",
+        out_tmpl.to_str().unwrap(),
+        &url,
+    ])
+    .await?;
 
     cleanup_temp(&out_dir).await;
 
-    let meta = tokio::fs::metadata(&video_path).await
-        .map_err(|e| format!("Cannot access output file: {}", e))?;
+    if !status.success() {
+        return Err("Video download failed".into());
+    }
+
+    let meta = tokio::fs::metadata(&out_file)
+        .await
+        .map_err(|e| format!("Cannot read file: {e}"))?;
 
     if meta.len() == 0 {
-        return Err("Downloaded file is empty.".into());
+        return Err("File is empty".into());
     }
 
     Ok(DownloadResult {
-        path:         video_path.to_string_lossy().to_string(),
-        file_size_mb: meta.len() as f64 / 1_048_576.0,
+        path: out_file.to_string_lossy().into(),
+        file_size_mb: file_mb(meta.len()),
     })
 }
 
-// Аудио через прямой вызов yt-dlp — избегаем проблем с кодеками в библиотеке
-async fn download_audio_ytdlp(url: &str, out_dir: &Path) -> Result<DownloadResult, String> {
-    // Сначала получаем название через --print title
-    let title_output = tokio::process::Command::new(ytdlp_bin())
-        .args(["--print", "title", "--no-playlist", url])
-        .output()
-        .await
-        .map_err(|e| format!("Failed to fetch title: {}", e))?;
+async fn download_audio(url: &str, out_dir: &Path) -> Result<DownloadResult, String> {
+    let title = fetch_title(url).await?;
+    let filename = sanitize_filename(&title);
 
-    let raw_title = String::from_utf8_lossy(&title_output.stdout);
-    let filename  = sanitize_filename(raw_title.trim());
-    let full_name = format!("{}.mp3", filename);
-    let out_file  = out_dir.join(&full_name);
-    let out_tmpl  = out_dir.join(format!("{}.%(ext)s", filename));
-
+    let out_file = out_dir.join(format!("{filename}.mp3"));
     if out_file.exists() {
-        return Err(format!("File '{}' already exists.", out_file.display()));
+        return Err("File already exists".into());
     }
 
-    let status = tokio::process::Command::new(ytdlp_bin())
-        .args([
-            "-f", "bestaudio",
-            "-x",
-            "--audio-format", "mp3",
-            "--audio-quality", "0",
-            "--ffmpeg-location", "libs/ffmpeg",
-            "--no-playlist",
-            "-o", out_tmpl.to_str().unwrap_or("%(title)s.%(ext)s"),
-            url,
-        ])
-        .status()
-        .await
-        .map_err(|e| format!("Failed to spawn yt-dlp: {}", e))?;
+    let out_tmpl = out_dir.join(format!("{filename}.%(ext)s"));
+
+    let status = run_ytdlp(&[
+        "-f",
+        "bestaudio",
+        "-x",
+        "--audio-format",
+        "mp3",
+        "--audio-quality",
+        "0",
+        "--ffmpeg-location",
+        "libs/ffmpeg",
+        "--no-playlist",
+        "-o",
+        out_tmpl.to_str().unwrap(),
+        url,
+    ])
+    .await?;
 
     cleanup_temp(out_dir).await;
 
     if !status.success() {
-        return Err("Audio download failed.".into());
+        return Err("Audio download failed".into());
     }
 
-    let meta = tokio::fs::metadata(&out_file).await
-        .map_err(|e| format!("Cannot access output file: {}", e))?;
+    let meta = tokio::fs::metadata(&out_file)
+        .await
+        .map_err(|e| format!("Cannot read file: {e}"))?;
 
     if meta.len() == 0 {
-        return Err("Downloaded audio file is empty.".into());
+        return Err("File is empty".into());
     }
 
     Ok(DownloadResult {
-        path:         out_file.to_string_lossy().to_string(),
-        file_size_mb: meta.len() as f64 / 1_048_576.0,
+        path: out_file.to_string_lossy().into(),
+        file_size_mb: file_mb(meta.len()),
     })
 }

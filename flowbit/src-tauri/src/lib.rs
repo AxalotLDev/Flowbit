@@ -29,12 +29,13 @@ pub fn run() {
         .manage(DownloadState::new())
         .manage(TwitchDownloadState::new())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             functions::valid::is_youtube_url,
+            functions::valid::is_twitch_url,
             functions::get_info::get_youtube_info,
+            functions::get_info::get_twitch_info,
             functions::download::download_video,
-            functions::twitch::is_twitch_url,
-            functions::twitch::get_twitch_info,
             functions::twitch::download_twitch,
         ])
         .run(tauri::generate_context!())
