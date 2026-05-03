@@ -134,7 +134,9 @@ body {
 .btn-primary:hover:not(:disabled) { background: #3a6ae8; }
 .btn-primary:active:not(:disabled) { transform: scale(.98); }
 .btn-primary:disabled { opacity: .55; cursor: not-allowed; }
-
+.btn-primary-link {
+  margin-top: 10px;
+}
 .spinner {
   width: 14px; height: 14px; border: 2px solid rgba(255,255,255,.3);
   border-top-color: white; border-radius: 50%; animation: spin .7s linear infinite;

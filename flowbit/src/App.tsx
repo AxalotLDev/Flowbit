@@ -1,6 +1,7 @@
 import "./App.css";
 import { useState, useEffect, useCallback, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { openUrl } from "@tauri-apps/plugin-opener";
 
 type Platform     = "youtube" | "twitch" | null;
 type Quality      = "best" | "high" | "medium" | "low" | "worst";
@@ -37,7 +38,23 @@ const VideoIcon = () => (
       <rect x="3" y="6" width="12" height="12" rx="2"/>
     </svg>
 );
+function extractYouTubeId(url: string): string | null {
+  try {
+    const u = new URL(url);
 
+    if (u.hostname.includes("youtu.be")) {
+      return u.pathname.slice(1);
+    }
+
+    if (u.hostname.includes("youtube.com")) {
+      return u.searchParams.get("v");
+    }
+
+    return null;
+  } catch {
+    return null;
+  }
+}
 export default function App() {
   const [url, setUrl]                 = useState("");
   const [platform, setPlatform]       = useState<Platform>(null);
@@ -217,13 +234,36 @@ export default function App() {
                 <p className="card-sub">{sub}</p>
               </div>
 
-              {youtubeInfo && (
-                  <div className="embed-wrap"
-                       dangerouslySetInnerHTML={{ __html: youtubeInfo.html }} />
-              )}
+              {youtubeInfo && (() => {
+                const videoId = extractYouTubeId(url);
+
+                if (!videoId) return null;
+
+                return (
+                    <div className="embed-wrap">
+                      <iframe
+                          src={`https://www.youtube.com/embed/${videoId}`}
+                          allowFullScreen
+                      />
+
+                      <button
+                          className="btn-primary btn-primary-link"
+                          onClick={async () => await openUrl(url)}
+                      >
+                        Открыть в YouTube
+                      </button>
+                    </div>
+                );
+              })()}
               {twitchInfo?.thumbnail_url && (
                   <div className="thumb-wrap">
                     <img src={twitchInfo.thumbnail_url} alt={twitchInfo.title} />
+                    <button
+                        className="btn-primary btn-primary-link"
+                        onClick={async () => await openUrl(url)}
+                    >
+                      Открыть в Twitch
+                    </button>
                   </div>
               )}
 

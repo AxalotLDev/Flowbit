@@ -8,10 +8,11 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
-    "tauri:wayland": "GDK_BACKEND=wayland WAYLAND_DISPLAY=wayland-0 tauri dev"  },
+    "tauri:wayland": "GDK_BACKEND=wayland WAYLAND_DISPLAY=wayland-0 tauri dev"
+  },
   "dependencies": {
     "@tauri-apps/api": "^2",
-    "@tauri-apps/plugin-opener": "^2",
+    "@tauri-apps/plugin-opener": "^2.5.4",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
     "regex": "^6.1.0"
