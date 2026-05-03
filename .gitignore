@@ -1,3 +1,5 @@
 /flowbit/node_modules/
 /flowbit/dist/
 /flowbit/src-tauri/libs/
+/flowbit/libs/ffmpeg
+/flowbit/libs/yt-dlp
