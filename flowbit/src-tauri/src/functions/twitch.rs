@@ -4,7 +4,8 @@ use serde_json::Value;
 use std::path::{Path, PathBuf};
 use tauri::State;
 use tokio::process::Command;
-use crate::functions::download::DownloadResult;
+use crate::functions::download::{ffmpeg, DownloadResult};
+use crate::LIBS_PATH;
 
 #[derive(Serialize, Clone)]
 pub struct TwitchVideoInfo {
@@ -110,8 +111,8 @@ impl AudioCodec {
 }
 
 #[inline]
-fn ytdlp_bin() -> &'static str {
-    "libs/yt-dlp"
+pub fn ytdlp_bin() -> &'static str {
+    LIBS_PATH.get().expect("yt-dlp not initialized")
 }
 
 fn default_downloads() -> PathBuf {
@@ -217,6 +218,8 @@ pub async fn download_twitch(
         "--no-playlist".into(),
         "--print".into(),
         "after_move:filepath".into(),
+        "--ffmpeg-location".into(),
+        ffmpeg().into(),
     ];
 
     if is_audio {

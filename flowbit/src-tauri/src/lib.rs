@@ -1,27 +1,56 @@
 mod functions;
-use std::path::PathBuf;
-use yt_dlp::Downloader;
+
 use functions::download::DownloadState;
 use functions::twitch::TwitchDownloadState;
+use std::path::PathBuf;
+use std::sync::OnceLock;
+use tauri::{AppHandle, Manager};
+use yt_dlp::Downloader;
+static LIBS_PATH: OnceLock<String> = OnceLock::new();
 
+pub fn init_libs_dir_path(path: &PathBuf) {
+    LIBS_PATH.set(path.to_string_lossy().to_string()).ok();
+}
 #[tauri::command]
-async fn install_dependencies() -> Result<(), String> {
-    Downloader::with_new_binaries(PathBuf::from("libs"), PathBuf::from("output"))
+async fn install_dependencies(app: &AppHandle) -> Result<(), String> {
+    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+
+    let libs_dir = data_dir.join("libs");
+    let output_dir = data_dir.join("output");
+
+    std::fs::create_dir_all(&libs_dir).map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(&output_dir).map_err(|e| e.to_string())?;
+
+    init_libs_dir_path(&libs_dir);
+
+    Downloader::with_new_binaries(libs_dir, output_dir)
         .await
         .map_err(|e| e.to_string())?
         .build()
         .await
         .map_err(|e| e.to_string())?;
+
     Ok(())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        .setup(|_app| {
-            tauri::async_runtime::spawn(async {
-                if let Err(e) = install_dependencies().await {
-                    eprintln!("Failed to install dependencies: {}", e);
+        .setup(|app| {
+            let _path = app
+                .path()
+                .app_data_dir()
+                .expect("no app data dir")
+                .join("libs")
+                .join(if cfg!(windows) {
+                    "yt-dlp.exe"
+                } else {
+                    "yt-dlp"
+                });
+
+            tauri::async_runtime::block_on(async {
+                if let Err(e) = install_dependencies(app.handle()).await {
+                    eprintln!("Failed: {}", e);
                 }
             });
             Ok(())

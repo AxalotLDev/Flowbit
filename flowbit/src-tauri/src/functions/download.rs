@@ -1,3 +1,4 @@
+use crate::LIBS_PATH;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use tokio::process::Command;
@@ -51,7 +52,7 @@ pub enum AudioCodec {
     Mp3,
     Aac,
     Opus,
-    Flac
+    Flac,
 }
 
 impl VideoCodec {
@@ -64,7 +65,7 @@ impl VideoCodec {
             Self::H265 => Some("hevc_nvenc"),
             Self::Av1 => Some("av1_nvenc"),
             // Intel/AMD VAAPI (если нужно)
-            Self::Vp9 => Some("vp9_vaapi")
+            Self::Vp9 => Some("vp9_vaapi"),
         }
     }
 }
@@ -76,7 +77,7 @@ impl AudioCodec {
             Self::Mp3 => Some("mp3"),
             Self::Aac => Some("aac"),
             Self::Opus => Some("opus"),
-            Self::Flac => Some("flac")
+            Self::Flac => Some("flac"),
         }
     }
 
@@ -85,14 +86,23 @@ impl AudioCodec {
             Self::Auto | Self::Mp3 => "mp3",
             Self::Aac => "aac",
             Self::Opus => "opus",
-            Self::Flac => "flac"
+            Self::Flac => "flac",
         }
     }
 }
 
 #[inline]
-fn ytdlp_bin() -> &'static str {
-    "libs/yt-dlp"
+pub fn libs_dir() -> &'static str {
+    LIBS_PATH.get().expect("LIBS_PATH not initialized yet")
+}
+#[inline]
+pub fn yt_dlp() -> String {
+    format!("{}/yt-dlp", libs_dir())
+}
+
+#[inline]
+pub fn ffmpeg() -> String {
+    format!("{}/ffmpeg", libs_dir())
 }
 
 fn default_downloads() -> Option<PathBuf> {
@@ -133,7 +143,7 @@ fn quality_to_format(q: Quality) -> &'static str {
 }
 
 async fn fetch_title(url: &str) -> Result<String, String> {
-    let output = Command::new(ytdlp_bin())
+    let output = Command::new(yt_dlp())
         .args(["--print", "title", "--no-playlist", url])
         .output()
         .await
@@ -167,7 +177,7 @@ fn file_mb(len: u64) -> f64 {
 }
 
 async fn run_ytdlp(args: Vec<String>) -> Result<std::process::ExitStatus, String> {
-    Command::new(ytdlp_bin())
+    Command::new(yt_dlp())
         .args(&args)
         .status()
         .await
@@ -216,7 +226,7 @@ pub async fn download_video(
         "--merge-output-format".into(),
         "mp4".into(),
         "--ffmpeg-location".into(),
-        "libs/ffmpeg".into(),
+        ffmpeg().into(),
         "--no-playlist".into(),
     ];
 
@@ -280,7 +290,7 @@ async fn download_audio(
         "--audio-quality".into(),
         "0".into(),
         "--ffmpeg-location".into(),
-        "libs/ffmpeg".into(),
+        ffmpeg().into(),
         "--no-playlist".into(),
         "-o".into(),
         out_tmpl,
@@ -289,7 +299,7 @@ async fn download_audio(
         url.to_string(),
     ];
 
-    let output = Command::new(ytdlp_bin())
+    let output = Command::new(yt_dlp())
         .args(&args)
         .output()
         .await
