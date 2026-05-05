@@ -1,11 +1,11 @@
+use crate::functions::download::{fetch_duration, ffmpeg, section_changed, DownloadResult};
 use crate::functions::get_info::get_twitch_info;
+use crate::LIBS_PATH;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 use tauri::State;
 use tokio::process::Command;
-use crate::functions::download::{ffmpeg, DownloadResult};
-use crate::LIBS_PATH;
 
 #[derive(Serialize, Clone)]
 pub struct TwitchVideoInfo {
@@ -16,7 +16,6 @@ pub struct TwitchVideoInfo {
     pub thumbnail_url: Option<String>,
     pub view_count: Option<u64>,
 }
-
 
 pub struct TwitchDownloadState;
 impl TwitchDownloadState {
@@ -74,7 +73,7 @@ pub enum AudioCodec {
     Mp3,
     Aac,
     Opus,
-    Flac
+    Flac,
 }
 
 impl VideoCodec {
@@ -96,7 +95,7 @@ impl AudioCodec {
             Self::Mp3 => Some("mp3"),
             Self::Aac => Some("aac"),
             Self::Opus => Some("opus"),
-            Self::Flac => Some("flac")
+            Self::Flac => Some("flac"),
         }
     }
 
@@ -105,7 +104,7 @@ impl AudioCodec {
             Self::Auto | Self::Mp3 => "mp3",
             Self::Aac => "aac",
             Self::Opus => "opus",
-            Self::Flac => "flac"
+            Self::Flac => "flac",
         }
     }
 }
@@ -195,6 +194,9 @@ pub async fn download_twitch(
     mode: Option<DownloadMode>,
     video_codec: Option<VideoCodec>,
     audio_codec: Option<AudioCodec>,
+    start: Option<String>,
+    end: Option<String>,
+    duration: Option<u64>,
 ) -> Result<DownloadResult, String> {
     let out_dir = path.map(PathBuf::from).unwrap_or_else(default_downloads);
 
@@ -204,13 +206,34 @@ pub async fn download_twitch(
 
     let info = get_twitch_info(url.clone()).await?;
     let name = sanitize(&info.title);
-
     let is_audio = matches!(mode, Some(DownloadMode::Audio));
 
     let out_tmpl = out_dir
         .join(format!("{name}.%(ext)s"))
         .to_string_lossy()
         .into_owned();
+
+    let start_str = start.as_deref().unwrap_or("00:00:00").to_string();
+
+    let resolved_duration = match duration {
+        Some(d) => Some(d),
+        None => fetch_duration(&url).await,
+    };
+
+    let end_str = match end {
+        Some(e) if e != "00:00:00" => e.to_string(),
+        _ => match resolved_duration {
+            Some(dur) => {
+                let h = dur / 3600;
+                let m = (dur % 3600) / 60;
+                let s = dur % 60;
+                format!("{:02}:{:02}:{:02}", h, m, s)
+            }
+            None => "00:00:00".to_string(),
+        },
+    };
+
+    let need_section = section_changed(&start_str, &end_str, resolved_duration);
 
     let mut args: Vec<String> = vec![
         "-o".into(),
@@ -274,7 +297,6 @@ pub async fn download_twitch(
         return Err("yt-dlp failed".into());
     }
 
-    // 💥 FIX: реальный файл вместо угадывания
     let real_path = String::from_utf8_lossy(&output.stdout)
         .lines()
         .last()
@@ -287,6 +309,41 @@ pub async fn download_twitch(
     }
 
     let out_file = PathBuf::from(real_path);
+
+    if need_section {
+        let temp_input = out_file.clone();
+
+        let clipped_file = out_file.with_file_name(format!(
+            "{}_clip.{}",
+            out_file.file_stem().unwrap_or_default().to_string_lossy(),
+            out_file.extension().unwrap_or_default().to_string_lossy()
+        ));
+
+        let ffmpeg_args = vec![
+            "-y".into(),
+            "-i".into(),
+            temp_input.to_string_lossy().into_owned(),
+            "-ss".into(),
+            start_str.clone(),
+            "-to".into(),
+            end_str.clone(),
+            "-c".into(),
+            "copy".into(),
+            clipped_file.to_string_lossy().into_owned(),
+        ];
+
+        let ffmpeg_status = Command::new(ffmpeg())
+            .args(&ffmpeg_args)
+            .status()
+            .await
+            .map_err(|e| format!("ffmpeg failed: {e}"))?;
+
+        if !ffmpeg_status.success() {
+            return Err("ffmpeg clipping failed".into());
+        }
+        let _ = tokio::fs::remove_file(&temp_input).await;
+        let _ = tokio::fs::rename(&clipped_file, &out_file).await;
+    }
 
     let meta = tokio::fs::metadata(&out_file)
         .await

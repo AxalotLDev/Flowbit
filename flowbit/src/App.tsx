@@ -14,6 +14,7 @@ interface YoutubeInfo {
     title: string;
     author_name: string;
     html: string;
+    duration: number | null;
 }
 
 interface TwitchInfo {
@@ -30,10 +31,11 @@ interface DownloadResult {
 }
 
 function formatDuration(s: number) {
-    const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
-    return h > 0
-        ? `${h}:${String(m).padStart(2, "0")}:${String(sec).padStart(2, "0")}`
-        : `${m}:${String(sec).padStart(2, "0")}`;
+    const h = Math.floor(s / 3600);
+    const m = Math.floor((s % 3600) / 60);
+    const sec = s % 60;
+
+    return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(sec).padStart(2, "0")}`;
 }
 
 const QUALITIES: { value: Quality; label: string }[] = [
@@ -101,6 +103,9 @@ export default function App() {
     const [loadingInfo, setLoadingInfo] = useState(false);
     const [downloadPath, setDownloadPath] = useState<string | null>(null);
     const abortRef = useRef<AbortController | null>(null);
+    const [startTime, setStartTime] = useState("00:00:00");
+    const [endTime, setEndTime] = useState("00:00:00");
+    const [timeError, setTimeError] = useState("");
 
     useEffect(() => {
         abortRef.current?.abort();
@@ -134,11 +139,27 @@ export default function App() {
                 if (isYt) {
                     setPlatform("youtube");
                     const info = await invoke<YoutubeInfo>("get_youtube_info", {url});
-                    if (!controller.signal.aborted) setYoutubeInfo(info);
+                    if (!controller.signal.aborted) {
+                        setYoutubeInfo(info);
+                        const durationNum = Number(info.duration);
+                        if (!isNaN(durationNum) && durationNum > 0) {
+                            setStartTime("00:00:00");
+                            setEndTime(formatDuration(durationNum));
+                        }
+                        console.log(durationNum, endTime)
+                    }
                 } else if (isTw) {
                     setPlatform("twitch");
                     const info = await invoke<TwitchInfo>("get_twitch_info", {url});
-                    if (!controller.signal.aborted) setTwitchInfo(info);
+                    if (!controller.signal.aborted) {
+                        setTwitchInfo(info);
+                        const durationNum = Number(info.duration);
+                        if (!isNaN(durationNum) && durationNum > 0) {
+                            setStartTime("00:00:00");
+                            setEndTime(formatDuration(durationNum));
+                        }
+                        console.log(durationNum, endTime)
+                    }
                 } else {
                     if (!controller.signal.aborted)
                         setUrlError(" Неверный URL — поддерживаются YouTube и Twitch");
@@ -158,6 +179,10 @@ export default function App() {
         };
     }, [url]);
 
+    useEffect(() => {
+        console.log('🕒 endTime changed:', endTime);
+    }, [endTime]);
+
     function resetAll() {
         setYoutubeInfo(null);
         setTwitchInfo(null);
@@ -170,18 +195,36 @@ export default function App() {
 
     const handleDownload = useCallback(async () => {
         if (!platform || downloading) return;
+
+        setTimeError("");
+        setError("");
+
+        try {
+            await invoke("validate_time_range", {
+                start: startTime,
+                end: endTime,
+                maxDuration: youtubeInfo?.duration ?? twitchInfo?.duration ?? null,
+            });
+        } catch (e) {
+            setTimeError(String(e));
+            return;
+        }
+
         setDownloading(true);
         setResult(null);
-        setError("");
+
         try {
             const cmd = platform === "twitch" ? "download_twitch" : "download_video";
             const res = await invoke<DownloadResult>(cmd, {
                 url,
                 quality,
                 mode,
-                path: downloadPath ?? undefined,
+                path: downloadPath ?? null,
                 videoCodec: mode === "video" ? videoCodec : undefined,
                 audioCodec,
+                start: startTime,
+                end: endTime,
+                duration: youtubeInfo?.duration ?? twitchInfo?.duration ?? null,
             });
             setResult(res);
         } catch (e) {
@@ -189,12 +232,15 @@ export default function App() {
         } finally {
             setDownloading(false);
         }
-    }, [url, platform, quality, mode, videoCodec, audioCodec, downloading, downloadPath]);
+    }, [url, platform, quality, mode, videoCodec, audioCodec, downloading, downloadPath, startTime, endTime, youtubeInfo, twitchInfo]);
 
     const hasInfo = youtubeInfo !== null || twitchInfo !== null;
     const title = youtubeInfo?.title ?? twitchInfo?.title ?? "";
     const sub = youtubeInfo
-        ? `Автор: ${youtubeInfo.author_name}`
+        ? [
+            `Автор: ${youtubeInfo.author_name}`,
+            youtubeInfo.duration != null ? formatDuration(Number(youtubeInfo.duration)) : ""
+        ].filter(Boolean).join("  ·  ")
         : twitchInfo
             ? [
                 twitchInfo.channel,
@@ -215,7 +261,8 @@ export default function App() {
             <div className="logo">
                 <div className="logo-icon">
                     <svg viewBox="0 0 24 24">
-                        <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 14.5v-9l6 4.5-6 4.5z"/>
+                        <path
+                            d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 14.5v-9l6 4.5-6 4.5z"/>
                     </svg>
                 </div>
                 <span className="logo-name">Flowbit</span>
@@ -279,7 +326,8 @@ export default function App() {
                         return (
                             <div className="embed-wrap">
                                 <iframe src={`https://www.youtube.com/embed/${videoId}`} allowFullScreen/>
-                                <button className="btn-primary btn-primary-link" onClick={async () => await openUrl(url)}>
+                                <button className="btn-primary btn-primary-link"
+                                        onClick={async () => await openUrl(url)}>
                                     Открыть в YouTube
                                 </button>
                             </div>
@@ -306,7 +354,8 @@ export default function App() {
                                 onClick={() => setMode("video")}
                                 disabled={downloading}
                             >
-                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14"
+                                     height="14">
                                     <path d="M15 10l4.553-2.07A1 1 0 0121 8.81v6.38a1 1 0 01-1.447.9L15 14"/>
                                     <rect x="3" y="6" width="12" height="12" rx="2"/>
                                 </svg>
@@ -317,7 +366,8 @@ export default function App() {
                                 onClick={() => setMode("audio")}
                                 disabled={downloading}
                             >
-                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14"
+                                     height="14">
                                     <path d="M9 18V5l12-2v13"/>
                                     <circle cx="6" cy="18" r="3"/>
                                     <circle cx="18" cy="16" r="3"/>
@@ -374,6 +424,26 @@ export default function App() {
                                 ))}
                             </div>
 
+
+
+                            <p style={{marginTop: "20px"}} className="quality-label">Фрагмент</p>
+                            <div style={{display: "flex", gap: "8px"}}>
+                                <input
+                                    className="url-input"
+                                    placeholder="00:00:00"
+                                    value={startTime}
+                                    onChange={e => setStartTime(e.target.value)}
+                                />
+
+                                <input
+                                    className="url-input"
+                                    value={endTime}
+                                    onChange={e => setEndTime(e.target.value)}
+                                />
+                            </div>
+
+                            {timeError && <p className="url-error">{timeError}</p>}
+
                             <p className="patch-label">Папка сохранения</p>
                             <button
                                 className="patch-pill"
@@ -409,13 +479,32 @@ export default function App() {
                                     </button>
                                 ))}
                             </div>
+
+                            <p style={{marginTop: "20px"}} className="quality-label">Фрагмент</p>
+                            <div style={{display: "flex", gap: "8px"}}>
+                                <input
+                                    className="url-input"
+                                    placeholder="00:00:00"
+                                    value={startTime}
+                                    onChange={e => setStartTime(e.target.value)}
+                                />
+
+                                <input
+                                    className="url-input"
+                                    value={endTime}
+                                    onChange={e => setEndTime(e.target.value)}
+                                />
+                            </div>
+
+                            {timeError && <p className="url-error">{timeError}</p>}
                         </div>
                     )}
 
                     {error && (
                         <div className="error-box">
                             <div className="error-title">
-                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14"
+                                     height="14">
                                     <circle cx="12" cy="12" r="10"/>
                                     <line x1="12" y1="8" x2="12" y2="12"/>
                                     <line x1="12" y1="16" x2="12.01" y2="16"/>
@@ -429,7 +518,8 @@ export default function App() {
                     {result && (
                         <div className="result-box">
                             <div className="result-title">
-                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14"
+                                     height="14">
                                     <polyline points="20 6 9 17 4 12"/>
                                 </svg>
                                 Файл сохранён

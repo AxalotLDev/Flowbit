@@ -152,6 +152,55 @@ async fn fetch_title(url: &str) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
+fn parse_time_to_secs(t: &str) -> Option<u64> {
+    let parts: Vec<&str> = t.split(':').collect();
+    if parts.len() != 3 {
+        return None;
+    }
+    let h = parts[0].parse::<u64>().ok()?;
+    let m = parts[1].parse::<u64>().ok()?;
+    let s = parts[2].parse::<u64>().ok()?;
+    if m >= 60 || s >= 60 {
+        return None;
+    }
+    Some(h * 3600 + m * 60 + s)
+}
+pub fn section_changed(start: &str, end: &str, duration: Option<u64>) -> bool {
+    let start_secs = parse_time_to_secs(start).unwrap_or(0);
+
+    if start_secs != 0 {
+        return true;
+    }
+
+    let end_secs = match parse_time_to_secs(end) {
+        Some(s) => s,
+        None => return true,
+    };
+
+    if end_secs == 0 {
+        return false;
+    }
+
+    match duration {
+        Some(dur) => end_secs < dur.saturating_sub(1),
+        None => true,
+    }
+}
+
+pub async fn fetch_duration(url: &str) -> Option<u64> {
+    let output = Command::new(yt_dlp())
+        .args(["--print", "duration", "--no-playlist", url])
+        .output()
+        .await
+        .ok()?;
+
+    String::from_utf8_lossy(&output.stdout)
+        .trim()
+        .parse::<f64>()
+        .ok()
+        .map(|d| d as u64)
+}
+
 pub async fn cleanup_temp(dir: &Path) {
     let Ok(mut entries) = tokio::fs::read_dir(dir).await else {
         return;
@@ -192,6 +241,9 @@ pub async fn download_video(
     mode: Option<DownloadMode>,
     video_codec: Option<VideoCodec>,
     audio_codec: Option<AudioCodec>,
+    start: Option<String>,
+    end: Option<String>,
+    duration: Option<u64>,
 ) -> Result<DownloadResult, String> {
     let out_dir = path
         .map(PathBuf::from)
@@ -208,11 +260,29 @@ pub async fn download_video(
 
     let title = fetch_title(&url).await?;
     let filename = sanitize_filename(&title);
-
     let out_file = out_dir.join(format!("{filename}.mp4"));
-    if out_file.exists() {
-        return Err("File already exists".into());
-    }
+
+    let start_str = start.as_deref().unwrap_or("00:00:00").to_string();
+
+    let resolved_duration = match duration {
+        Some(d) => Some(d),
+        None => fetch_duration(&url).await,
+    };
+
+    let end_str = match end.as_deref() {
+        Some(e) if e != "00:00:00" => e.to_string(),
+        _ => match resolved_duration {
+            Some(dur) => {
+                let h = dur / 3600;
+                let m = (dur % 3600) / 60;
+                let s = dur % 60;
+                format!("{:02}:{:02}:{:02}", h, m, s)
+            }
+            None => "00:00:00".to_string(),
+        },
+    };
+
+    let need_section = section_changed(&start_str, &end_str, resolved_duration);
 
     let format = quality_to_format(quality.unwrap_or(Quality::Best));
     let out_tmpl = out_dir
@@ -252,6 +322,38 @@ pub async fn download_video(
 
     if !status.success() {
         return Err("Video download failed".into());
+    }
+
+    if need_section {
+        let temp_input = out_file.clone();
+
+        let clipped_file = out_dir.join(format!("{filename}_cut.mp4"));
+
+        let ffmpeg_args = vec![
+            "-y".into(),
+            "-i".into(),
+            temp_input.to_string_lossy().into_owned(),
+            "-ss".into(),
+            start_str.clone(),
+            "-to".into(),
+            end_str.clone(),
+            "-c".into(),
+            "copy".into(),
+            clipped_file.to_string_lossy().into_owned(),
+        ];
+
+        let ffmpeg_status = Command::new(ffmpeg())
+            .args(&ffmpeg_args)
+            .status()
+            .await
+            .map_err(|e| format!("ffmpeg failed: {e}"))?;
+
+        if !ffmpeg_status.success() {
+            return Err("ffmpeg trimming failed".into());
+        }
+
+        let _ = tokio::fs::remove_file(&temp_input).await;
+        let _ = tokio::fs::rename(&clipped_file, &out_file).await;
     }
 
     let meta = tokio::fs::metadata(&out_file)

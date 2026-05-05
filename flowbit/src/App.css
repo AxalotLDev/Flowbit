@@ -117,13 +117,15 @@ body {
 
 .patch-label {
   font-size: 11px; color: var(--text2); font-weight: 600;
-  text-transform: uppercase; letter-spacing: .06em; margin-bottom: 8px;
-  margin-top: 10px;
+  text-transform: uppercase; letter-spacing: .06em;
+  margin-top: 20px;
+  margin-bottom: 8px;
 }
 .patch-pill {
   font-size: 12px; font-weight: 500; padding: 5px 12px; border-radius: 20px;
   cursor: pointer; border: 1px solid var(--border); background: transparent;
   color: var(--text2); transition: all .15s;
+  margin-bottom: 10px;
 }
 .patch-pill:hover:not(:disabled) { border-color: var(--border2); color: var(--text); }
 .patch-pill:disabled { opacity: .5; cursor: not-allowed; }
