@@ -94,27 +94,6 @@ body {
 .quality-pill.active { background: var(--blue-bg); border-color: var(--blue); color: var(--blue); }
 .quality-pill:disabled { opacity: .5; cursor: not-allowed; }
 
-/* Codec pills */
-.codec-pills { display: flex; gap: 6px; flex-wrap: wrap; }
-.codec-pill {
-  display: flex; flex-direction: column; align-items: center;
-  padding: 6px 14px; border-radius: 10px;
-  cursor: pointer; border: 1px solid var(--border); background: transparent;
-  transition: all .15s; min-width: 64px;
-}
-.codec-pill:hover:not(:disabled) { border-color: var(--border2); background: var(--surface2); }
-.codec-pill.active { background: var(--blue-bg); border-color: var(--blue); }
-.codec-pill:disabled { opacity: .5; cursor: not-allowed; }
-.codec-label {
-  font-size: 13px; font-weight: 600; color: var(--text);
-  line-height: 1;
-}
-.codec-pill.active .codec-label { color: var(--blue); }
-.codec-hint {
-  font-size: 10px; color: var(--text3); margin-top: 3px; white-space: nowrap;
-}
-.codec-pill.active .codec-hint { color: rgba(79,125,255,.7); }
-
 .patch-label {
   font-size: 11px; color: var(--text2); font-weight: 600;
   text-transform: uppercase; letter-spacing: .06em;

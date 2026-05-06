@@ -2,6 +2,8 @@ mod functions;
 
 use functions::download::DownloadState;
 use functions::twitch::TwitchDownloadState;
+use functions::download_quickjs::download_quickjs;
+
 use std::path::PathBuf;
 use std::sync::OnceLock;
 use tauri::{AppHandle, Manager};
@@ -23,13 +25,14 @@ async fn install_dependencies(app: &AppHandle) -> Result<(), String> {
 
     init_libs_dir_path(&libs_dir);
 
-    Downloader::with_new_binaries(libs_dir, output_dir)
+    Downloader::with_new_binaries(libs_dir.clone(), output_dir)
         .await
         .map_err(|e| e.to_string())?
         .build()
         .await
         .map_err(|e| e.to_string())?;
 
+    download_quickjs(&libs_dir).await?;
     Ok(())
 }
 

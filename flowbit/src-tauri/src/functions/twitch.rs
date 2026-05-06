@@ -1,6 +1,7 @@
-use crate::functions::download::{fetch_duration, ffmpeg, section_changed, DownloadResult};
+use crate::functions::download::{
+    fetch_duration, ffmpeg, run_ytdlp_output, section_changed, DownloadResult,
+};
 use crate::functions::get_info::get_twitch_info;
-use crate::LIBS_PATH;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
@@ -52,66 +53,6 @@ impl TwitchQuality {
 pub enum DownloadMode {
     Video,
     Audio,
-}
-
-#[derive(Deserialize, Copy, Clone, Default)]
-#[serde(rename_all = "lowercase")]
-pub enum VideoCodec {
-    #[default]
-    Auto,
-    H264,
-    H265,
-    Vp9,
-    Av1,
-}
-
-#[derive(Deserialize, Copy, Clone, Default)]
-#[serde(rename_all = "lowercase")]
-pub enum AudioCodec {
-    #[default]
-    Auto,
-    Mp3,
-    Aac,
-    Opus,
-    Flac,
-}
-
-impl VideoCodec {
-    fn as_vcodec(self) -> Option<&'static str> {
-        match self {
-            Self::Auto => None,
-            Self::H264 => Some("h264"),
-            Self::H265 => Some("hevc"),
-            Self::Vp9 => Some("vp9"),
-            Self::Av1 => Some("av1"),
-        }
-    }
-}
-
-impl AudioCodec {
-    fn as_acodec(self) -> Option<&'static str> {
-        match self {
-            Self::Auto => None,
-            Self::Mp3 => Some("mp3"),
-            Self::Aac => Some("aac"),
-            Self::Opus => Some("opus"),
-            Self::Flac => Some("flac"),
-        }
-    }
-
-    fn as_audio_format(self) -> &'static str {
-        match self {
-            Self::Auto | Self::Mp3 => "mp3",
-            Self::Aac => "aac",
-            Self::Opus => "opus",
-            Self::Flac => "flac",
-        }
-    }
-}
-
-#[inline]
-pub fn ytdlp_bin() -> &'static str {
-    LIBS_PATH.get().expect("yt-dlp not initialized")
 }
 
 fn default_downloads() -> PathBuf {
@@ -172,12 +113,8 @@ async fn cleanup_temp(dir: &Path) {
     }
 }
 pub async fn fetch_json(url: &str) -> Result<Value, String> {
-    let out = Command::new(ytdlp_bin())
-        .args(["--dump-json", "--no-playlist", url])
-        .output()
-        .await
-        .map_err(|e| format!("yt-dlp error: {e}"))?;
-
+    let args: Vec<String> = vec!["--dump-json".into(), "--no-playlist".into(), url.into()];
+    let out = run_ytdlp_output(args, "yt-dlp error:".to_string()).await?;
     if !out.status.success() {
         return Err(String::from_utf8_lossy(&out.stderr).to_string());
     }
@@ -192,8 +129,6 @@ pub async fn download_twitch(
     path: Option<String>,
     quality: Option<TwitchQuality>,
     mode: Option<DownloadMode>,
-    video_codec: Option<VideoCodec>,
-    audio_codec: Option<AudioCodec>,
     start: Option<String>,
     end: Option<String>,
     duration: Option<u64>,
@@ -246,50 +181,26 @@ pub async fn download_twitch(
     ];
 
     if is_audio {
-        let acodec = audio_codec.unwrap_or_default();
-
         args.extend(vec![
             "-f".into(),
             "bestaudio".into(),
             "-x".into(),
-            "--audio-format".into(),
-            acodec.as_audio_format().into(),
             "--audio-quality".into(),
             "0".into(),
         ]);
     } else {
-        let vcodec = video_codec.unwrap_or_default();
-        let acodec = audio_codec.unwrap_or_default();
-
         args.extend(vec![
             "-f".into(),
             quality.unwrap_or(TwitchQuality::Best).fmt().into(),
             "--merge-output-format".into(),
             "mp4".into(),
         ]);
-
-        // ❗ FIX: один postprocessor args (объединяем)
-        let mut pp = String::from("ffmpeg:");
-
-        if let Some(vc) = vcodec.as_vcodec() {
-            pp.push_str(&format!(" -vcodec {vc}"));
-        }
-
-        if let Some(ac) = acodec.as_acodec() {
-            pp.push_str(&format!(" -acodec {ac}"));
-        }
-
         args.push("--postprocessor-args".into());
-        args.push(pp);
     }
 
     args.push(url.clone());
 
-    let output = Command::new(ytdlp_bin())
-        .args(&args)
-        .output()
-        .await
-        .map_err(|e| format!("yt-dlp failed: {e}"))?;
+    let output = run_ytdlp_output(args, "yt-dlp failed:".to_string()).await?;
 
     cleanup_temp(&out_dir).await;
 

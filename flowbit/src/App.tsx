@@ -7,8 +7,6 @@ import {open} from "@tauri-apps/plugin-dialog";
 type Platform = "youtube" | "twitch" | null;
 type Quality = "best" | "high" | "medium" | "low" | "worst";
 type DownloadMode = "video" | "audio";
-type VideoCodec = "auto" | "h264" | "h265" | "vp9" | "av1";
-type AudioCodec = "auto" | "mp3" | "aac" | "opus" | "flac";
 
 interface YoutubeInfo {
     title: string;
@@ -46,22 +44,6 @@ const QUALITIES: { value: Quality; label: string }[] = [
     {value: "worst", label: "Худшее"},
 ];
 
-const VIDEO_CODECS: { value: VideoCodec; label: string; hint: string }[] = [
-    {value: "auto", label: "Авто", hint: "Без перекодирования"},
-    {value: "h264", label: "H.264", hint: "Совместимый"},
-    {value: "h265", label: "H.265", hint: "Эффективный"},
-    {value: "vp9", label: "VP9", hint: "Сжатие"},
-    {value: "av1", label: "AV1", hint: "Медленнее, меньше"},
-];
-
-const AUDIO_CODECS: { value: AudioCodec; label: string; hint: string }[] = [
-    {value: "auto", label: "Авто", hint: "Без перекодирования"},
-    {value: "mp3", label: "MP3", hint: "Универсальный"},
-    {value: "aac", label: "AAC", hint: "Для Apple"},
-    {value: "opus", label: "Opus", hint: "Высокое качество"},
-    {value: "flac", label: "FLAC", hint: "Без потерь"}
-];
-
 const SearchIcon = () => (
     <svg viewBox="0 0 24 24" fill="none" strokeWidth="2" stroke="currentColor">
         <circle cx="11" cy="11" r="8"/>
@@ -94,8 +76,6 @@ export default function App() {
     const [twitchInfo, setTwitchInfo] = useState<TwitchInfo | null>(null);
     const [quality, setQuality] = useState<Quality>("best");
     const [mode, setMode] = useState<DownloadMode>("video");
-    const [videoCodec, setVideoCodec] = useState<VideoCodec>("auto");
-    const [audioCodec, setAudioCodec] = useState<AudioCodec>("auto");
     const [urlError, setUrlError] = useState("");
     const [downloading, setDownloading] = useState(false);
     const [result, setResult] = useState<DownloadResult | null>(null);
@@ -179,10 +159,6 @@ export default function App() {
         };
     }, [url]);
 
-    useEffect(() => {
-        console.log('🕒 endTime changed:', endTime);
-    }, [endTime]);
-
     function resetAll() {
         setYoutubeInfo(null);
         setTwitchInfo(null);
@@ -191,6 +167,7 @@ export default function App() {
         setResult(null);
         setError("");
         setLoadingInfo(false);
+        setDownloadPath(null);
     }
 
     const handleDownload = useCallback(async () => {
@@ -220,8 +197,6 @@ export default function App() {
                 quality,
                 mode,
                 path: downloadPath ?? null,
-                videoCodec: mode === "video" ? videoCodec : undefined,
-                audioCodec,
                 start: startTime,
                 end: endTime,
                 duration: youtubeInfo?.duration ?? twitchInfo?.duration ?? null,
@@ -232,7 +207,7 @@ export default function App() {
         } finally {
             setDownloading(false);
         }
-    }, [url, platform, quality, mode, videoCodec, audioCodec, downloading, downloadPath, startTime, endTime, youtubeInfo, twitchInfo]);
+    }, [url, platform, quality, mode, downloading, downloadPath, startTime, endTime, youtubeInfo, twitchInfo]);
 
     const hasInfo = youtubeInfo !== null || twitchInfo !== null;
     const title = youtubeInfo?.title ?? twitchInfo?.title ?? "";
@@ -345,7 +320,6 @@ export default function App() {
 
                     <div className="divider"/>
 
-                    {/* Формат: видео / аудио */}
                     <div className="quality-section">
                         <p className="quality-label">Формат</p>
                         <div className="mode-toggle">
@@ -392,40 +366,6 @@ export default function App() {
                                 ))}
                             </div>
 
-                            <p className="quality-label" style={{marginTop: 12}}>Видеокодек</p>
-                            <div className="codec-pills">
-                                {VIDEO_CODECS.map(c => (
-                                    <button
-                                        key={c.value}
-                                        className={`codec-pill${videoCodec === c.value ? " active" : ""}`}
-                                        onClick={() => setVideoCodec(c.value)}
-                                        disabled={downloading}
-                                        title={c.hint}
-                                    >
-                                        <span className="codec-label">{c.label}</span>
-                                        <span className="codec-hint">{c.hint}</span>
-                                    </button>
-                                ))}
-                            </div>
-
-                            <p className="quality-label" style={{marginTop: 12}}>Аудиокодек</p>
-                            <div className="codec-pills">
-                                {AUDIO_CODECS.map(c => (
-                                    <button
-                                        key={c.value}
-                                        className={`codec-pill${audioCodec === c.value ? " active" : ""}`}
-                                        onClick={() => setAudioCodec(c.value)}
-                                        disabled={downloading}
-                                        title={c.hint}
-                                    >
-                                        <span className="codec-label">{c.label}</span>
-                                        <span className="codec-hint">{c.hint}</span>
-                                    </button>
-                                ))}
-                            </div>
-
-
-
                             <p style={{marginTop: "20px"}} className="quality-label">Фрагмент</p>
                             <div style={{display: "flex", gap: "8px"}}>
                                 <input
@@ -456,31 +396,14 @@ export default function App() {
                                     if (typeof selected === "string") setDownloadPath(selected);
                                 }}
                             >
-                                📁 {downloadPath ? downloadPath.split("/").pop() : "Downloads (по умолчанию)"}
+                                📁 {downloadPath ? downloadPath.split("/").pop() : "Загрузки (по умолчанию)"}
                             </button>
                         </div>
                     )}
 
-                    {/* Кодек для аудио-режима */}
                     {mode === "audio" && (
                         <div className="quality-section" style={{paddingTop: 0}}>
-                            <p className="quality-label">Аудиокодек</p>
-                            <div className="codec-pills">
-                                {AUDIO_CODECS.map(c => (
-                                    <button
-                                        key={c.value}
-                                        className={`codec-pill${audioCodec === c.value ? " active" : ""}`}
-                                        onClick={() => setAudioCodec(c.value)}
-                                        disabled={downloading}
-                                        title={c.hint}
-                                    >
-                                        <span className="codec-label">{c.label}</span>
-                                        <span className="codec-hint">{c.hint}</span>
-                                    </button>
-                                ))}
-                            </div>
-
-                            <p style={{marginTop: "20px"}} className="quality-label">Фрагмент</p>
+                            <p style={{marginTop: "1px"}} className="quality-label">Фрагмент</p>
                             <div style={{display: "flex", gap: "8px"}}>
                                 <input
                                     className="url-input"

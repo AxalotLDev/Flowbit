@@ -33,64 +33,6 @@ pub enum DownloadMode {
     Audio,
 }
 
-#[derive(Deserialize, Copy, Clone, Default)]
-#[serde(rename_all = "lowercase")]
-pub enum VideoCodec {
-    #[default]
-    Auto,
-    H264,
-    H265,
-    Vp9,
-    Av1,
-}
-
-#[derive(Deserialize, Copy, Clone, Default)]
-#[serde(rename_all = "lowercase")]
-pub enum AudioCodec {
-    #[default]
-    Auto,
-    Mp3,
-    Aac,
-    Opus,
-    Flac,
-}
-
-impl VideoCodec {
-    fn as_vcodec(self) -> Option<&'static str> {
-        match self {
-            Self::Auto => None,
-
-            // NVIDIA NVENC (GPU)
-            Self::H264 => Some("h264_nvenc"),
-            Self::H265 => Some("hevc_nvenc"),
-            Self::Av1 => Some("av1_nvenc"),
-            // Intel/AMD VAAPI (если нужно)
-            Self::Vp9 => Some("vp9_vaapi"),
-        }
-    }
-}
-
-impl AudioCodec {
-    fn as_acodec(self) -> Option<&'static str> {
-        match self {
-            Self::Auto => None,
-            Self::Mp3 => Some("mp3"),
-            Self::Aac => Some("aac"),
-            Self::Opus => Some("opus"),
-            Self::Flac => Some("flac"),
-        }
-    }
-
-    fn as_audio_format(self) -> &'static str {
-        match self {
-            Self::Auto | Self::Mp3 => "mp3",
-            Self::Aac => "aac",
-            Self::Opus => "opus",
-            Self::Flac => "flac",
-        }
-    }
-}
-
 #[inline]
 pub fn libs_dir() -> &'static str {
     LIBS_PATH.get().expect("LIBS_PATH not initialized yet")
@@ -99,10 +41,29 @@ pub fn libs_dir() -> &'static str {
 pub fn yt_dlp() -> String {
     format!("{}/yt-dlp", libs_dir())
 }
-
 #[inline]
 pub fn ffmpeg() -> String {
     format!("{}/ffmpeg", libs_dir())
+}
+#[inline]
+pub fn quickjs() -> String {
+    let file_name = if cfg!(windows) {
+        if cfg!(target_arch = "x86_64") {
+            "qjs-windows-x86_64.exe"
+        } else {
+            "qjs-windows-x86.exe"
+        }
+    } else if cfg!(target_os = "macos") {
+        "qjs-darwin"
+    } else if cfg!(target_arch = "aarch64") {
+        "qjs-linux-aarch64"
+    } else if cfg!(target_arch = "x86") {
+        "qjs-linux-x86"
+    } else {
+        "qjs-linux-x86_64"
+    };
+
+    format!("{}/{}", libs_dir(), file_name)
 }
 
 fn default_downloads() -> Option<PathBuf> {
@@ -143,12 +104,13 @@ fn quality_to_format(q: Quality) -> &'static str {
 }
 
 async fn fetch_title(url: &str) -> Result<String, String> {
-    let output = Command::new(yt_dlp())
-        .args(["--print", "title", "--no-playlist", url])
-        .output()
-        .await
-        .map_err(|e| format!("Failed to fetch title: {e}"))?;
-
+    let args: Vec<String> = vec![
+        "--print".into(),
+        "title".into(),
+        "--no-playlist".into(),
+        url.into(),
+    ];
+    let output = run_ytdlp_output(args, "Failed to fetch title:".to_string()).await?;
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
@@ -188,9 +150,14 @@ pub fn section_changed(start: &str, end: &str, duration: Option<u64>) -> bool {
 }
 
 pub async fn fetch_duration(url: &str) -> Option<u64> {
-    let output = Command::new(yt_dlp())
-        .args(["--print", "duration", "--no-playlist", url])
-        .output()
+    let args: Vec<String> = vec![
+        "--print".into(),
+        "duration".into(),
+        "--no-playlist".into(),
+        url.into(),
+    ];
+
+    let output = run_ytdlp_output(args, "Failed to fetch duration".to_string())
         .await
         .ok()?;
 
@@ -225,12 +192,36 @@ fn file_mb(len: u64) -> f64 {
     len as f64 / 1_048_576.0
 }
 
-async fn run_ytdlp(args: Vec<String>) -> Result<std::process::ExitStatus, String> {
-    Command::new(yt_dlp())
+pub async fn run_ytdlp_status(
+    args: Vec<String>,
+    error_format: String,
+) -> Result<std::process::ExitStatus, String> {
+    let default_args: Vec<String> = vec!["--js-runtimes".into(), format!("quickjs:{}", quickjs())];
+
+    let status = Command::new(yt_dlp())
+        .args(&default_args)
         .args(&args)
         .status()
         .await
-        .map_err(|e| format!("yt-dlp failed: {e}"))
+        .map_err(|e| format!("{error_format}: {e}"))?;
+
+    Ok(status)
+}
+
+pub async fn run_ytdlp_output(
+    args: Vec<String>,
+    error_format: String,
+) -> Result<std::process::Output, String> {
+    let default_args: Vec<String> = vec!["--js-runtimes".into(), format!("quickjs:{}", quickjs())];
+
+    let output = Command::new(yt_dlp())
+        .args(&default_args)
+        .args(&args)
+        .output()
+        .await
+        .map_err(|e| format!("{error_format}: {e}"))?;
+
+    Ok(output)
 }
 
 #[tauri::command]
@@ -239,8 +230,6 @@ pub async fn download_video(
     path: Option<String>,
     quality: Option<Quality>,
     mode: Option<DownloadMode>,
-    video_codec: Option<VideoCodec>,
-    audio_codec: Option<AudioCodec>,
     start: Option<String>,
     end: Option<String>,
     duration: Option<u64>,
@@ -255,7 +244,7 @@ pub async fn download_video(
         .map_err(|e| format!("Cannot create directory: {e}"))?;
 
     if matches!(mode, Some(DownloadMode::Audio)) {
-        return download_audio(&url, &out_dir, audio_codec.unwrap_or_default()).await;
+        return download_audio(&url, &out_dir, start, end, duration).await;
     }
 
     let title = fetch_title(&url).await?;
@@ -300,23 +289,11 @@ pub async fn download_video(
         "--no-playlist".into(),
     ];
 
-    // Video codec remux/re-encode
-    if let Some(vcodec) = video_codec.unwrap_or_default().as_vcodec() {
-        args.push("-S".into());
-        args.push(format!("vcodec:{vcodec}"));
-    }
-
-    // Audio codec remux/re-encode
-    if let Some(acodec) = audio_codec.unwrap_or_default().as_acodec() {
-        args.push("--postprocessor-args".into());
-        args.push(format!("ffmpeg:-acodec {acodec}"));
-    }
-
     args.push("-o".into());
     args.push(out_tmpl);
     args.push(url.clone());
 
-    let status = run_ytdlp(args).await?;
+    let status = run_ytdlp_status(args, "Failed to get status: {e}".to_string()).await?;
 
     cleanup_temp(&out_dir).await;
 
@@ -373,7 +350,9 @@ pub async fn download_video(
 async fn download_audio(
     url: &str,
     out_dir: &Path,
-    codec: AudioCodec,
+    start: Option<String>,
+    end: Option<String>,
+    duration: Option<u64>,
 ) -> Result<DownloadResult, String> {
     let title = fetch_title(url).await?;
     let filename = sanitize_filename(&title);
@@ -383,12 +362,34 @@ async fn download_audio(
         .to_string_lossy()
         .into_owned();
 
+    let start_str = start.as_deref().unwrap_or("00:00:00").to_string();
+
+    let resolved_duration = match duration {
+        Some(d) => Some(d),
+        None => fetch_duration(&url).await,
+    };
+
+    let end_str = match end.as_deref() {
+        Some(e) if e != "00:00:00" => e.to_string(),
+        _ => match resolved_duration {
+            Some(dur) => {
+                let h = dur / 3600;
+                let m = (dur % 3600) / 60;
+                let s = dur % 60;
+                format!("{:02}:{:02}:{:02}", h, m, s)
+            }
+            None => "00:00:00".to_string(),
+        },
+    };
+
+    let need_section = section_changed(&start_str, &end_str, resolved_duration);
+
     let args: Vec<String> = vec![
         "-f".into(),
         "bestaudio".into(),
         "-x".into(),
         "--audio-format".into(),
-        codec.as_audio_format().into(),
+        "mp3".into(),
         "--audio-quality".into(),
         "0".into(),
         "--ffmpeg-location".into(),
@@ -401,11 +402,7 @@ async fn download_audio(
         url.to_string(),
     ];
 
-    let output = Command::new(yt_dlp())
-        .args(&args)
-        .output()
-        .await
-        .map_err(|e| format!("yt-dlp failed: {e}"))?;
+    let output = run_ytdlp_output(args, "yt-dlp error:".to_string()).await?;
 
     cleanup_temp(out_dir).await;
 
@@ -413,7 +410,6 @@ async fn download_audio(
         return Err("Audio download failed".into());
     }
 
-    // 👉 yt-dlp возвращает реальный путь файла
     let real_path = String::from_utf8_lossy(&output.stdout)
         .lines()
         .last()
@@ -426,6 +422,38 @@ async fn download_audio(
     }
 
     let out_file = PathBuf::from(&real_path);
+
+    if need_section {
+        let temp_input = out_file.clone();
+
+        let clipped_file = out_dir.join(format!("{filename}_cut.mp3"));
+
+        let ffmpeg_args = vec![
+            "-y".into(),
+            "-i".into(),
+            temp_input.to_string_lossy().into_owned(),
+            "-ss".into(),
+            start_str.clone(),
+            "-to".into(),
+            end_str.clone(),
+            "-c".into(),
+            "copy".into(),
+            clipped_file.to_string_lossy().into_owned(),
+        ];
+
+        let ffmpeg_status = Command::new(ffmpeg())
+            .args(&ffmpeg_args)
+            .status()
+            .await
+            .map_err(|e| format!("ffmpeg failed: {e}"))?;
+
+        if !ffmpeg_status.success() {
+            return Err("ffmpeg trimming failed".into());
+        }
+
+        let _ = tokio::fs::remove_file(&temp_input).await;
+        let _ = tokio::fs::rename(&clipped_file, &out_file).await;
+    }
 
     let meta = tokio::fs::metadata(&out_file)
         .await
