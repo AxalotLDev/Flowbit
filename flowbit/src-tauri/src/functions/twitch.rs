@@ -176,8 +176,6 @@ pub async fn download_twitch(
         "--no-playlist".into(),
         "--print".into(),
         "after_move:filepath".into(),
-        "--ffmpeg-location".into(),
-        ffmpeg().into(),
     ];
 
     if is_audio {

@@ -196,7 +196,12 @@ pub async fn run_ytdlp_status(
     args: Vec<String>,
     error_format: String,
 ) -> Result<std::process::ExitStatus, String> {
-    let default_args: Vec<String> = vec!["--js-runtimes".into(), format!("quickjs:{}", quickjs())];
+    let default_args: Vec<String> = vec![
+        "--ffmpeg-location".into(),
+        ffmpeg().into(),
+        "--js-runtimes".into(),
+        format!("quickjs:{}", quickjs()),
+    ];
 
     let status = Command::new(yt_dlp())
         .args(&default_args)
@@ -212,7 +217,12 @@ pub async fn run_ytdlp_output(
     args: Vec<String>,
     error_format: String,
 ) -> Result<std::process::Output, String> {
-    let default_args: Vec<String> = vec!["--js-runtimes".into(), format!("quickjs:{}", quickjs())];
+    let default_args: Vec<String> = vec![
+        "--ffmpeg-location".into(),
+        ffmpeg().into(),
+        "--js-runtimes".into(),
+        format!("quickjs:{}", quickjs()),
+    ];
 
     let output = Command::new(yt_dlp())
         .args(&default_args)
@@ -284,8 +294,6 @@ pub async fn download_video(
         format.into(),
         "--merge-output-format".into(),
         "mp4".into(),
-        "--ffmpeg-location".into(),
-        ffmpeg().into(),
         "--no-playlist".into(),
     ];
 
@@ -392,8 +400,6 @@ async fn download_audio(
         "mp3".into(),
         "--audio-quality".into(),
         "0".into(),
-        "--ffmpeg-location".into(),
-        ffmpeg().into(),
         "--no-playlist".into(),
         "-o".into(),
         out_tmpl,
