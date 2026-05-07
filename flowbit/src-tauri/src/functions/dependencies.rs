@@ -10,18 +10,22 @@ static LIBS_PATH: OnceLock<String> = OnceLock::new();
 pub fn init_libs_dir_path(path: &PathBuf) {
     LIBS_PATH.set(path.to_string_lossy().to_string()).ok();
 }
+
 #[inline]
 pub fn libs_dir() -> &'static str {
     LIBS_PATH.get().expect("LIBS_PATH not initialized yet")
 }
+
 #[inline]
 pub fn yt_dlp() -> String {
     format!("{}/yt-dlp", libs_dir())
 }
+
 #[inline]
 pub fn ffmpeg() -> String {
     format!("{}/ffmpeg", libs_dir())
 }
+
 #[inline]
 pub fn quickjs() -> String {
     let file_name = if cfg!(windows) {
@@ -42,6 +46,7 @@ pub fn quickjs() -> String {
 
     format!("{}/{}", libs_dir(), file_name)
 }
+
 #[derive(Debug, Deserialize)]
 struct GithubRelease {
     assets: Vec<GithubAsset>,
