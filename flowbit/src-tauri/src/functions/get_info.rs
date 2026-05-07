@@ -1,4 +1,4 @@
-use crate::functions::download::fetch_duration;
+use crate::functions::youtube::fetch_duration;
 use crate::functions::twitch::{fetch_json, TwitchVideoInfo};
 use reqwest::Client;
 use serde::Serialize;

@@ -1,4 +1,4 @@
-use crate::functions::download::{
+use crate::functions::youtube::{
     fetch_duration, run_ytdlp_output, section_changed, DownloadResult,
 };
 use crate::functions::get_info::get_twitch_info;

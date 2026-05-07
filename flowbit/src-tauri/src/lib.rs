@@ -1,11 +1,11 @@
 mod functions;
 
-use crate::functions::download::download_video;
 use crate::functions::get_info::{get_twitch_info, get_youtube_info};
 use crate::functions::twitch::download_twitch;
 use crate::functions::valid::{is_twitch_url, is_youtube_url, validate_time_range};
-use functions::download::DownloadState;
+use crate::functions::youtube::download_video;
 use functions::twitch::TwitchDownloadState;
+use functions::youtube::DownloadState;
 
 use crate::functions::dependencies::install_dependencies;
 use tauri::Manager;
