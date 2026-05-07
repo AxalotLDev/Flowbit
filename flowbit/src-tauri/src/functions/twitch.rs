@@ -1,7 +1,8 @@
 use crate::functions::download::{
-    fetch_duration, ffmpeg, run_ytdlp_output, section_changed, DownloadResult,
+    fetch_duration, run_ytdlp_output, section_changed, DownloadResult,
 };
 use crate::functions::get_info::get_twitch_info;
+use crate::functions::dependencies::ffmpeg;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::path::{Path, PathBuf};

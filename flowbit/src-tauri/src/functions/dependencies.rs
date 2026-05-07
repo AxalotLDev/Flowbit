@@ -1,8 +1,47 @@
-use std::fs;
-use std::path::Path;
-
 use serde::Deserialize;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
+use tauri::{AppHandle, Manager};
+use yt_dlp::Downloader;
 
+static LIBS_PATH: OnceLock<String> = OnceLock::new();
+
+pub fn init_libs_dir_path(path: &PathBuf) {
+    LIBS_PATH.set(path.to_string_lossy().to_string()).ok();
+}
+#[inline]
+pub fn libs_dir() -> &'static str {
+    LIBS_PATH.get().expect("LIBS_PATH not initialized yet")
+}
+#[inline]
+pub fn yt_dlp() -> String {
+    format!("{}/yt-dlp", libs_dir())
+}
+#[inline]
+pub fn ffmpeg() -> String {
+    format!("{}/ffmpeg", libs_dir())
+}
+#[inline]
+pub fn quickjs() -> String {
+    let file_name = if cfg!(windows) {
+        if cfg!(target_arch = "x86_64") {
+            "qjs-windows-x86_64.exe"
+        } else {
+            "qjs-windows-x86.exe"
+        }
+    } else if cfg!(target_os = "macos") {
+        "qjs-darwin"
+    } else if cfg!(target_arch = "aarch64") {
+        "qjs-linux-aarch64"
+    } else if cfg!(target_arch = "x86") {
+        "qjs-linux-x86"
+    } else {
+        "qjs-linux-x86_64"
+    };
+
+    format!("{}/{}", libs_dir(), file_name)
+}
 #[derive(Debug, Deserialize)]
 struct GithubRelease {
     assets: Vec<GithubAsset>,
@@ -15,7 +54,6 @@ struct GithubAsset {
 }
 
 pub async fn download_quickjs(libs_dir: &Path) -> Result<(), String> {
-    // 1. определяем имя бинарника под платформу
     let asset_name = if cfg!(windows) {
         if cfg!(target_arch = "x86_64") {
             "qjs-windows-x86_64.exe"
@@ -34,12 +72,10 @@ pub async fn download_quickjs(libs_dir: &Path) -> Result<(), String> {
 
     let file_path = libs_dir.join(asset_name);
 
-    // уже скачан
     if file_path.exists() {
         return Ok(());
     }
 
-    // 2. получаем latest release GitHub
     let url = "https://api.github.com/repos/quickjs-ng/quickjs/releases/latest";
 
     let client = reqwest::Client::builder()
@@ -57,14 +93,12 @@ pub async fn download_quickjs(libs_dir: &Path) -> Result<(), String> {
         .await
         .map_err(|e| e.to_string())?;
 
-    // 3. ищем нужный asset
     let asset = release
         .assets
         .into_iter()
         .find(|a| a.name == asset_name)
         .ok_or_else(|| format!("QuickJS asset not found: {}", asset_name))?;
 
-    // 4. скачиваем файл
     let bytes = reqwest::get(&asset.browser_download_url)
         .await
         .map_err(|e| e.to_string())?
@@ -74,7 +108,6 @@ pub async fn download_quickjs(libs_dir: &Path) -> Result<(), String> {
 
     fs::write(&file_path, &bytes).map_err(|e| e.to_string())?;
 
-    // 5. делаем исполняемым (Linux/macOS)
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -87,5 +120,27 @@ pub async fn download_quickjs(libs_dir: &Path) -> Result<(), String> {
         fs::set_permissions(&file_path, perms).map_err(|e| e.to_string())?;
     }
 
+    Ok(())
+}
+
+pub async fn install_dependencies(app: &AppHandle) -> Result<(), String> {
+    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+
+    let libs_dir = data_dir.join("libs");
+    let output_dir = data_dir.join("output");
+
+    fs::create_dir_all(&libs_dir).map_err(|e| e.to_string())?;
+    fs::create_dir_all(&output_dir).map_err(|e| e.to_string())?;
+
+    init_libs_dir_path(&libs_dir);
+
+    Downloader::with_new_binaries(libs_dir.clone(), output_dir)
+        .await
+        .map_err(|e| e.to_string())?
+        .build()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    download_quickjs(&libs_dir).await?;
     Ok(())
 }

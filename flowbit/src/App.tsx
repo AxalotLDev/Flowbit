@@ -121,24 +121,38 @@ export default function App() {
                     const info = await invoke<YoutubeInfo>("get_youtube_info", {url});
                     if (!controller.signal.aborted) {
                         setYoutubeInfo(info);
-                        const durationNum = Number(info.duration);
-                        if (!isNaN(durationNum) && durationNum > 0) {
+                        const raw = info.duration;
+
+                        const durationNum =
+                            typeof raw === "number"
+                                ? raw
+                                : typeof raw === "string"
+                                    ? Number(raw)
+                                    : null;
+
+                        if (durationNum != null && durationNum > 0) {
                             setStartTime("00:00:00");
                             setEndTime(formatDuration(durationNum));
                         }
-                        console.log(durationNum, endTime)
                     }
                 } else if (isTw) {
                     setPlatform("twitch");
                     const info = await invoke<TwitchInfo>("get_twitch_info", {url});
                     if (!controller.signal.aborted) {
                         setTwitchInfo(info);
-                        const durationNum = Number(info.duration);
-                        if (!isNaN(durationNum) && durationNum > 0) {
+                        const raw = info.duration;
+
+                        const durationNum =
+                            typeof raw === "number"
+                                ? raw
+                                : typeof raw === "string"
+                                    ? Number(raw)
+                                    : null;
+
+                        if (durationNum != null && durationNum > 0) {
                             setStartTime("00:00:00");
                             setEndTime(formatDuration(durationNum));
                         }
-                        console.log(durationNum, endTime)
                     }
                 } else {
                     if (!controller.signal.aborted)

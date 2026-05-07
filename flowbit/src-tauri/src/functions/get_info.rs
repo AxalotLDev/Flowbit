@@ -1,5 +1,5 @@
 use crate::functions::download::fetch_duration;
-use crate::functions::twitch::TwitchVideoInfo;
+use crate::functions::twitch::{fetch_json, TwitchVideoInfo};
 use reqwest::Client;
 use serde::Serialize;
 
@@ -44,7 +44,7 @@ pub async fn get_youtube_info(url: String) -> Result<VideoInfo, String> {
 
 #[tauri::command]
 pub async fn get_twitch_info(url: String) -> Result<TwitchVideoInfo, String> {
-    let json = crate::functions::twitch::fetch_json(&url).await?;
+    let json = fetch_json(&url).await?;
 
     let is_live = json["is_live"].as_bool().unwrap_or(false);
 

@@ -1,5 +1,5 @@
-pub mod valid;
-pub mod get_info;
+pub mod dependencies;
 pub mod download;
+pub mod get_info;
 pub mod twitch;
-pub(crate) mod download_quickjs;
+pub mod valid;

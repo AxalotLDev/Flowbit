@@ -1,4 +1,4 @@
-use crate::LIBS_PATH;
+use crate::functions::dependencies::{ffmpeg, quickjs, yt_dlp};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use tokio::process::Command;
@@ -31,39 +31,6 @@ pub enum Quality {
 pub enum DownloadMode {
     Video,
     Audio,
-}
-
-#[inline]
-pub fn libs_dir() -> &'static str {
-    LIBS_PATH.get().expect("LIBS_PATH not initialized yet")
-}
-#[inline]
-pub fn yt_dlp() -> String {
-    format!("{}/yt-dlp", libs_dir())
-}
-#[inline]
-pub fn ffmpeg() -> String {
-    format!("{}/ffmpeg", libs_dir())
-}
-#[inline]
-pub fn quickjs() -> String {
-    let file_name = if cfg!(windows) {
-        if cfg!(target_arch = "x86_64") {
-            "qjs-windows-x86_64.exe"
-        } else {
-            "qjs-windows-x86.exe"
-        }
-    } else if cfg!(target_os = "macos") {
-        "qjs-darwin"
-    } else if cfg!(target_arch = "aarch64") {
-        "qjs-linux-aarch64"
-    } else if cfg!(target_arch = "x86") {
-        "qjs-linux-x86"
-    } else {
-        "qjs-linux-x86_64"
-    };
-
-    format!("{}/{}", libs_dir(), file_name)
 }
 
 fn default_downloads() -> Option<PathBuf> {
