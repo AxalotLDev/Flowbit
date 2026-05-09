@@ -4,3 +4,4 @@
 /flowbit/libs/ffmpeg
 /flowbit/libs/yt-dlp
 /flowbit/src-tauri/gen/
+.idea/inspectionProfiles/Project_Default.xml

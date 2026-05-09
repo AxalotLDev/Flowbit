@@ -1,8 +1,9 @@
 import "./App.css";
-import {useState, useEffect, useCallback, useRef} from "react";
-import {invoke} from "@tauri-apps/api/core";
-import {openUrl} from "@tauri-apps/plugin-opener";
-import {open} from "@tauri-apps/plugin-dialog";
+import { useState, useEffect, useCallback, useRef } from "react";
+import { invoke } from "@tauri-apps/api/core";
+import { openUrl } from "@tauri-apps/plugin-opener";
+import { open } from "@tauri-apps/plugin-dialog";
+import { listen } from "@tauri-apps/api/event";
 
 type Platform = "youtube" | "twitch" | null;
 type Quality = "best" | "high" | "medium" | "low" | "worst";
@@ -32,31 +33,59 @@ function formatDuration(s: number) {
     const h = Math.floor(s / 3600);
     const m = Math.floor((s % 3600) / 60);
     const sec = s % 60;
-
     return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(sec).padStart(2, "0")}`;
 }
 
 const QUALITIES: { value: Quality; label: string }[] = [
-    {value: "best", label: "Лучшее"},
-    {value: "high", label: "1080p"},
-    {value: "medium", label: "720p"},
-    {value: "low", label: "480p"},
-    {value: "worst", label: "Худшее"},
+    { value: "best", label: "Лучшее" },
+    { value: "high", label: "1080p" },
+    { value: "medium", label: "720p" },
+    { value: "low", label: "480p" },
+    { value: "worst", label: "Худшее" },
 ];
 
 const SearchIcon = () => (
     <svg viewBox="0 0 24 24" fill="none" strokeWidth="2" stroke="currentColor">
-        <circle cx="11" cy="11" r="8"/>
-        <line x1="21" y1="21" x2="16.65" y2="16.65"/>
+        <circle cx="11" cy="11" r="8" />
+        <line x1="21" y1="21" x2="16.65" y2="16.65" />
     </svg>
 );
 
 const VideoIcon = () => (
     <svg viewBox="0 0 24 24" fill="none" strokeWidth="1.5" stroke="currentColor">
-        <path d="M15 10l4.553-2.07A1 1 0 0121 8.81v6.38a1 1 0 01-1.447.9L15 14"/>
-        <rect x="3" y="6" width="12" height="12" rx="2"/>
+        <path d="M15 10l4.553-2.07A1 1 0 0121 8.81v6.38a1 1 0 01-1.447.9L15 14" />
+        <rect x="3" y="6" width="12" height="12" rx="2" />
     </svg>
 );
+
+const TerminalIcon = () => (
+    <svg viewBox="0 0 24 24" fill="none" strokeWidth="2" stroke="currentColor" width="13" height="13">
+        <polyline points="4 17 10 11 4 5" />
+        <line x1="12" y1="19" x2="20" y2="19" />
+    </svg>
+);
+
+const ChevronIcon = ({ open }: { open: boolean }) => (
+    <svg
+        viewBox="0 0 24 24"
+        fill="none"
+        strokeWidth="2"
+        stroke="currentColor"
+        width="12"
+        height="12"
+        style={{ transform: open ? "rotate(180deg)" : "none", transition: "transform .2s" }}
+    >
+        <polyline points="6 9 12 15 18 9" />
+    </svg>
+);
+
+function classifyLine(line: string): "error" | "warning" | "success" | "info" {
+    const l = line.toLowerCase();
+    if (l.includes("error") || l.includes("failed") || l.includes("ошибка")) return "error";
+    if (l.includes("warning") || l.includes("warn")) return "warning";
+    if (l.includes("100%") || l.includes("destination") || l.includes("finished")) return "success";
+    return "info";
+}
 
 function extractYouTubeId(url: string): string | null {
     try {
@@ -87,6 +116,36 @@ export default function App() {
     const [endTime, setEndTime] = useState("00:00:00");
     const [timeError, setTimeError] = useState("");
 
+    // Log state
+    const [logs, setLogs] = useState<{ text: string; kind: "error" | "warning" | "success" | "info" }[]>([]);
+    const [logsOpen, setLogsOpen] = useState(false);
+    const logsEndRef = useRef<HTMLDivElement>(null);
+    const unlistenRef = useRef<(() => void) | null>(null);
+
+    // Subscribe to yt-dlp log events once on mount
+    useEffect(() => {
+        let cancelled = false;
+        listen<string>("ytdlp-log", (event) => {
+            if (cancelled) return;
+            const line = event.payload;
+            setLogs((prev) => [...prev.slice(-499), { text: line, kind: classifyLine(line) }]);
+        }).then((unlisten) => {
+            if (cancelled) unlisten();
+            else unlistenRef.current = unlisten;
+        });
+        return () => {
+            cancelled = true;
+            unlistenRef.current?.();
+        };
+    }, []);
+
+    // Auto-scroll logs to bottom
+    useEffect(() => {
+        if (logsOpen) {
+            logsEndRef.current?.scrollIntoView({ behavior: "smooth" });
+        }
+    }, [logs, logsOpen]);
+
     useEffect(() => {
         abortRef.current?.abort();
 
@@ -110,26 +169,20 @@ export default function App() {
 
             try {
                 const [isYt, isTw] = await Promise.all([
-                    invoke<boolean>("is_youtube_url", {url}),
-                    invoke<boolean>("is_twitch_url", {url}),
+                    invoke<boolean>("is_youtube_url", { url }),
+                    invoke<boolean>("is_twitch_url", { url }),
                 ]);
 
                 if (controller.signal.aborted) return;
 
                 if (isYt) {
                     setPlatform("youtube");
-                    const info = await invoke<YoutubeInfo>("get_youtube_info", {url});
+                    const info = await invoke<YoutubeInfo>("get_youtube_info", { url });
                     if (!controller.signal.aborted) {
                         setYoutubeInfo(info);
                         const raw = info.duration;
-
                         const durationNum =
-                            typeof raw === "number"
-                                ? raw
-                                : typeof raw === "string"
-                                    ? Number(raw)
-                                    : null;
-
+                            typeof raw === "number" ? raw : typeof raw === "string" ? Number(raw) : null;
                         if (durationNum != null && durationNum > 0) {
                             setStartTime("00:00:00");
                             setEndTime(formatDuration(durationNum));
@@ -137,18 +190,12 @@ export default function App() {
                     }
                 } else if (isTw) {
                     setPlatform("twitch");
-                    const info = await invoke<TwitchInfo>("get_twitch_info", {url});
+                    const info = await invoke<TwitchInfo>("get_twitch_info", { url });
                     if (!controller.signal.aborted) {
                         setTwitchInfo(info);
                         const raw = info.duration;
-
                         const durationNum =
-                            typeof raw === "number"
-                                ? raw
-                                : typeof raw === "string"
-                                    ? Number(raw)
-                                    : null;
-
+                            typeof raw === "number" ? raw : typeof raw === "string" ? Number(raw) : null;
                         if (durationNum != null && durationNum > 0) {
                             setStartTime("00:00:00");
                             setEndTime(formatDuration(durationNum));
@@ -189,6 +236,8 @@ export default function App() {
 
         setTimeError("");
         setError("");
+        setLogs([]);
+        setLogsOpen(true);
 
         try {
             await invoke("validate_time_range", {
@@ -228,30 +277,35 @@ export default function App() {
     const sub = youtubeInfo
         ? [
             `Автор: ${youtubeInfo.author_name}`,
-            youtubeInfo.duration != null ? formatDuration(Number(youtubeInfo.duration)) : ""
-        ].filter(Boolean).join("  ·  ")
+            youtubeInfo.duration != null ? formatDuration(Number(youtubeInfo.duration)) : "",
+        ]
+            .filter(Boolean)
+            .join("  ·  ")
         : twitchInfo
             ? [
                 twitchInfo.channel,
                 twitchInfo.is_live ? "🔴 Live" : "",
                 twitchInfo.duration ? formatDuration(twitchInfo.duration) : "",
-            ].filter(Boolean).join("  ·  ")
+            ]
+                .filter(Boolean)
+                .join("  ·  ")
             : "";
 
     const downloadLabel = () => {
-        if (downloading) return <><span className="spinner"/>Загружается…</>;
+        if (downloading) return <><span className="spinner" />Загружается…</>;
         if (twitchInfo?.is_live) return mode === "audio" ? "Записать аудио" : "Записать стрим";
         return mode === "audio" ? "Скачать аудио" : "Скачать видео";
     };
 
+    const hasLogs = logs.length > 0;
+    const errorCount = logs.filter((l) => l.kind === "error").length;
+
     return (
         <main className="app">
-
             <div className="logo">
                 <div className="logo-icon">
                     <svg viewBox="0 0 24 24">
-                        <path
-                            d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 14.5v-9l6 4.5-6 4.5z"/>
+                        <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 14.5v-9l6 4.5-6 4.5z" />
                     </svg>
                 </div>
                 <span className="logo-name">Flowbit</span>
@@ -259,23 +313,25 @@ export default function App() {
             </div>
 
             <div className="search-box">
-                <div className="search-icon"><SearchIcon/></div>
+                <div className="search-icon">
+                    <SearchIcon />
+                </div>
                 <input
                     className={`url-input${urlError ? " url-input--error" : ""}`}
                     placeholder="Вставьте YouTube или Twitch URL…"
                     value={url}
-                    onChange={e => setUrl(e.target.value)}
+                    onChange={(e) => setUrl(e.target.value)}
                     disabled={downloading}
                 />
-                {loadingInfo && <div className="search-spinner"/>}
+                {loadingInfo && <div className="search-spinner" />}
             </div>
 
             {urlError && (
                 <p className="url-error">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="13" height="13">
-                        <circle cx="12" cy="12" r="10"/>
-                        <line x1="12" y1="8" x2="12" y2="12"/>
-                        <line x1="12" y1="16" x2="12.01" y2="16"/>
+                        <circle cx="12" cy="12" r="10" />
+                        <line x1="12" y1="8" x2="12" y2="12" />
+                        <line x1="12" y1="16" x2="12.01" y2="16" />
                     </svg>
                     {urlError}
                 </p>
@@ -283,56 +339,60 @@ export default function App() {
 
             {!hasInfo && !urlError && !loadingInfo && (
                 <div className="empty-state">
-                    <VideoIcon/>
-                    <p>Поддерживается YouTube и Twitch<br/>Вставьте ссылку выше для начала</p>
+                    <VideoIcon />
+                    <p>
+                        Поддерживается YouTube и Twitch
+                        <br />
+                        Вставьте ссылку выше для начала
+                    </p>
                 </div>
             )}
 
             {loadingInfo && (
                 <div className="card skeleton-card">
                     <div className="skeleton-header">
-                        <div className="skeleton skeleton-badge"/>
-                        <div className="skeleton skeleton-title"/>
-                        <div className="skeleton skeleton-sub"/>
+                        <div className="skeleton skeleton-badge" />
+                        <div className="skeleton skeleton-title" />
+                        <div className="skeleton skeleton-sub" />
                     </div>
-                    <div className="skeleton skeleton-thumb"/>
+                    <div className="skeleton skeleton-thumb" />
                 </div>
             )}
 
             {hasInfo && (
                 <div className="card">
                     <div className="card-header">
-                        <span className={`badge badge-${platform}`}>
-                            {platform === "twitch" ? "Twitch" : "YouTube"}
-                        </span>
+            <span className={`badge badge-${platform}`}>
+              {platform === "twitch" ? "Twitch" : "YouTube"}
+            </span>
                         <h2 className="card-title">{title}</h2>
                         <p className="card-sub">{sub}</p>
                     </div>
 
-                    {youtubeInfo && (() => {
-                        const videoId = extractYouTubeId(url);
-                        if (!videoId) return null;
-                        return (
-                            <div className="embed-wrap">
-                                <iframe src={`https://www.youtube.com/embed/${videoId}`} allowFullScreen/>
-                                <button className="btn-primary btn-primary-link"
-                                        onClick={async () => await openUrl(url)}>
-                                    Открыть в YouTube
-                                </button>
-                            </div>
-                        );
-                    })()}
+                    {youtubeInfo &&
+                        (() => {
+                            const videoId = extractYouTubeId(url);
+                            if (!videoId) return null;
+                            return (
+                                <div className="embed-wrap">
+                                    <iframe src={`https://www.youtube.com/embed/${videoId}`} allowFullScreen />
+                                    <button className="btn-primary btn-primary-link" onClick={async () => await openUrl(url)}>
+                                        Открыть в YouTube
+                                    </button>
+                                </div>
+                            );
+                        })()}
 
                     {twitchInfo?.thumbnail_url && (
                         <div className="thumb-wrap">
-                            <img src={twitchInfo.thumbnail_url} alt={twitchInfo.title}/>
+                            <img src={twitchInfo.thumbnail_url} alt={twitchInfo.title} />
                             <button className="btn-primary btn-primary-link" onClick={async () => await openUrl(url)}>
                                 Открыть в Twitch
                             </button>
                         </div>
                     )}
 
-                    <div className="divider"/>
+                    <div className="divider" />
 
                     <div className="quality-section">
                         <p className="quality-label">Формат</p>
@@ -342,10 +402,9 @@ export default function App() {
                                 onClick={() => setMode("video")}
                                 disabled={downloading}
                             >
-                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14"
-                                     height="14">
-                                    <path d="M15 10l4.553-2.07A1 1 0 0121 8.81v6.38a1 1 0 01-1.447.9L15 14"/>
-                                    <rect x="3" y="6" width="12" height="12" rx="2"/>
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14">
+                                    <path d="M15 10l4.553-2.07A1 1 0 0121 8.81v6.38a1 1 0 01-1.447.9L15 14" />
+                                    <rect x="3" y="6" width="12" height="12" rx="2" />
                                 </svg>
                                 Видео
                             </button>
@@ -354,45 +413,46 @@ export default function App() {
                                 onClick={() => setMode("audio")}
                                 disabled={downloading}
                             >
-                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14"
-                                     height="14">
-                                    <path d="M9 18V5l12-2v13"/>
-                                    <circle cx="6" cy="18" r="3"/>
-                                    <circle cx="18" cy="16" r="3"/>
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14">
+                                    <path d="M9 18V5l12-2v13" />
+                                    <circle cx="6" cy="18" r="3" />
+                                    <circle cx="18" cy="16" r="3" />
                                 </svg>
                                 Только аудио
                             </button>
                         </div>
                     </div>
 
-                    {/* Качество + кодеки для видео */}
                     {mode === "video" && (
-                        <div className="quality-section" style={{paddingTop: 0}}>
+                        <div className="quality-section" style={{ paddingTop: 0 }}>
                             <p className="quality-label">Качество</p>
                             <div className="quality-pills">
-                                {QUALITIES.map(q => (
+                                {QUALITIES.map((q) => (
                                     <button
                                         key={q.value}
                                         className={`quality-pill${quality === q.value ? " active" : ""}`}
                                         onClick={() => setQuality(q.value)}
                                         disabled={downloading}
-                                    >{q.label}</button>
+                                    >
+                                        {q.label}
+                                    </button>
                                 ))}
                             </div>
 
-                            <p style={{marginTop: "20px"}} className="quality-label">Фрагмент</p>
-                            <div style={{display: "flex", gap: "8px"}}>
+                            <p style={{ marginTop: "20px" }} className="quality-label">
+                                Фрагмент
+                            </p>
+                            <div style={{ display: "flex", gap: "8px" }}>
                                 <input
                                     className="url-input"
                                     placeholder="00:00:00"
                                     value={startTime}
-                                    onChange={e => setStartTime(e.target.value)}
+                                    onChange={(e) => setStartTime(e.target.value)}
                                 />
-
                                 <input
                                     className="url-input"
                                     value={endTime}
-                                    onChange={e => setEndTime(e.target.value)}
+                                    onChange={(e) => setEndTime(e.target.value)}
                                 />
                             </div>
 
@@ -416,23 +476,23 @@ export default function App() {
                     )}
 
                     {mode === "audio" && (
-                        <div className="quality-section" style={{paddingTop: 0}}>
-                            <p style={{marginTop: "1px"}} className="quality-label">Фрагмент</p>
-                            <div style={{display: "flex", gap: "8px"}}>
+                        <div className="quality-section" style={{ paddingTop: 0 }}>
+                            <p style={{ marginTop: "1px" }} className="quality-label">
+                                Фрагмент
+                            </p>
+                            <div style={{ display: "flex", gap: "8px" }}>
                                 <input
                                     className="url-input"
                                     placeholder="00:00:00"
                                     value={startTime}
-                                    onChange={e => setStartTime(e.target.value)}
+                                    onChange={(e) => setStartTime(e.target.value)}
                                 />
-
                                 <input
                                     className="url-input"
                                     value={endTime}
-                                    onChange={e => setEndTime(e.target.value)}
+                                    onChange={(e) => setEndTime(e.target.value)}
                                 />
                             </div>
-
                             {timeError && <p className="url-error">{timeError}</p>}
                         </div>
                     )}
@@ -440,11 +500,10 @@ export default function App() {
                     {error && (
                         <div className="error-box">
                             <div className="error-title">
-                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14"
-                                     height="14">
-                                    <circle cx="12" cy="12" r="10"/>
-                                    <line x1="12" y1="8" x2="12" y2="12"/>
-                                    <line x1="12" y1="16" x2="12.01" y2="16"/>
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14">
+                                    <circle cx="12" cy="12" r="10" />
+                                    <line x1="12" y1="8" x2="12" y2="12" />
+                                    <line x1="12" y1="16" x2="12.01" y2="16" />
                                 </svg>
                                 <a> Ошибка загрузки</a>
                             </div>
@@ -455,14 +514,45 @@ export default function App() {
                     {result && (
                         <div className="result-box">
                             <div className="result-title">
-                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14"
-                                     height="14">
-                                    <polyline points="20 6 9 17 4 12"/>
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14">
+                                    <polyline points="20 6 9 17 4 12" />
                                 </svg>
                                 Файл сохранён
                             </div>
                             <p className="result-path">{result.path}</p>
                             <p className="result-size">{result.file_size_mb.toFixed(1)} MB</p>
+                        </div>
+                    )}
+
+                    {/* Log Panel */}
+                    {hasLogs && (
+                        <div className="log-panel">
+                            <button className="log-toggle" onClick={() => setLogsOpen((v) => !v)}>
+                <span className="log-toggle-left">
+                  <TerminalIcon />
+                  <span>Логи yt-dlp</span>
+                    {errorCount > 0 && (
+                        <span className="log-badge-error">{errorCount} ошиб.</span>
+                    )}
+                    {downloading && <span className="log-live-dot" />}
+                </span>
+                                <span className="log-toggle-right">
+                  <span className="log-count">{logs.length} строк</span>
+                  <ChevronIcon open={logsOpen} />
+                </span>
+                            </button>
+
+                            {logsOpen && (
+                                <div className="log-body">
+                                    {logs.map((l, i) => (
+                                        <div key={i} className={`log-line log-line--${l.kind}`}>
+                                            <span className="log-line-num">{i + 1}</span>
+                                            <span className="log-line-text">{l.text}</span>
+                                        </div>
+                                    ))}
+                                    <div ref={logsEndRef} />
+                                </div>
+                            )}
                         </div>
                     )}
 

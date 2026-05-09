@@ -1,12 +1,10 @@
-use crate::functions::youtube::{
-    fetch_duration, run_ytdlp_output, section_changed, DownloadResult,
-};
+use crate::functions::youtube::{fetch_duration, run_ytdlp_output, section_changed, DownloadResult};
 use crate::functions::get_info::get_twitch_info;
 use crate::functions::dependencies::ffmpeg;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
-use tauri::State;
+use tauri::{AppHandle, Emitter, State};
 use tokio::process::Command;
 
 #[derive(Serialize, Clone)]
@@ -69,19 +67,16 @@ fn default_downloads() -> PathBuf {
 
 fn sanitize(name: &str) -> String {
     let mut out = String::with_capacity(name.len());
-
     for c in name.chars() {
         match c {
             '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' | '\0' => out.push('_'),
             _ => out.push(c),
         }
     }
-
     let s = out.trim();
     if s.is_empty() {
         return "stream".into();
     }
-
     if s.len() > 200 {
         s[..200].to_string()
     } else {
@@ -98,33 +93,31 @@ async fn cleanup_temp(dir: &Path) {
     let Ok(mut entries) = tokio::fs::read_dir(dir).await else {
         return;
     };
-
     while let Ok(Some(entry)) = entries.next_entry().await {
         let name = entry.file_name();
         let name = name.to_string_lossy();
-
         let bad = name.ends_with(".part")
             || name.ends_with(".tmp")
             || name.ends_with(".frag")
             || name.starts_with("temp_");
-
         if bad {
             let _ = tokio::fs::remove_file(entry.path()).await;
         }
     }
 }
+
 pub async fn fetch_json(url: &str) -> Result<Value, String> {
     let args: Vec<String> = vec!["--dump-json".into(), "--no-playlist".into(), url.into()];
-    let out = run_ytdlp_output(args, "yt-dlp error:".to_string()).await?;
+    let out = run_ytdlp_output(args, "yt-dlp error:".to_string(), None).await?;
     if !out.status.success() {
         return Err(String::from_utf8_lossy(&out.stderr).to_string());
     }
-
     serde_json::from_slice(&out.stdout).map_err(|e| format!("JSON error: {e}"))
 }
 
 #[tauri::command]
 pub async fn download_twitch(
+    app: AppHandle,
     _state: State<'_, TwitchDownloadState>,
     url: String,
     path: Option<String>,
@@ -134,6 +127,7 @@ pub async fn download_twitch(
     end: Option<String>,
     duration: Option<u64>,
 ) -> Result<DownloadResult, String> {
+    let app_opt = Some(app.clone());
     let out_dir = path.map(PathBuf::from).unwrap_or_else(default_downloads);
 
     tokio::fs::create_dir_all(&out_dir)
@@ -199,7 +193,7 @@ pub async fn download_twitch(
 
     args.push(url.clone());
 
-    let output = run_ytdlp_output(args, "yt-dlp failed:".to_string()).await?;
+    let output = run_ytdlp_output(args, "yt-dlp failed:".to_string(), app_opt.clone()).await?;
 
     cleanup_temp(&out_dir).await;
 
@@ -222,7 +216,6 @@ pub async fn download_twitch(
 
     if need_section {
         let temp_input = out_file.clone();
-
         let clipped_file = out_file.with_file_name(format!(
             "{}_clip.{}",
             out_file.file_stem().unwrap_or_default().to_string_lossy(),
@@ -241,6 +234,8 @@ pub async fn download_twitch(
             "copy".into(),
             clipped_file.to_string_lossy().into_owned(),
         ];
+
+        let _ = app.emit("ytdlp-log", "[ffmpeg] Clipping stream…");
 
         let ffmpeg_status = Command::new(ffmpeg())
             .args(&ffmpeg_args)
