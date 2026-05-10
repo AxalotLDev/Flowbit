@@ -8,6 +8,7 @@ use functions::twitch::TwitchDownloadState;
 use functions::youtube::DownloadState;
 
 use crate::functions::dependencies::install_dependencies;
+use crate::functions::playlist::{download_playlist, get_playlist_info, is_playlist_url};
 use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -44,6 +45,9 @@ pub fn run() {
             get_twitch_info,
             download_video,
             download_twitch,
+            is_playlist_url,
+            get_playlist_info,
+            download_playlist,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

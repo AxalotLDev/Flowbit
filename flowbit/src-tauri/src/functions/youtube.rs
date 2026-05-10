@@ -59,7 +59,7 @@ fn sanitize_filename(name: &str) -> String {
 }
 
 #[inline]
-fn quality_to_format(q: Quality) -> &'static str {
+pub fn quality_to_format(q: Quality) -> &'static str {
     match q {
         Quality::Best => "bestvideo+bestaudio/best",
         Quality::High => "bestvideo[height<=1080]+bestaudio/best[height<=1080]",
@@ -146,7 +146,7 @@ pub async fn cleanup_temp(dir: &Path) {
     }
 }
 
-fn file_mb(len: u64) -> f64 {
+pub fn file_mb(len: u64) -> f64 {
     len as f64 / 1_048_576.0
 }
 
@@ -171,8 +171,7 @@ pub async fn run_ytdlp_status(
     ];
 
     let mut child = Command::new(yt_dlp())
-        .args(&default_args)
-        .args(&args)
+        .args(default_args.iter().chain(args.iter()))
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
@@ -228,8 +227,7 @@ pub async fn run_ytdlp_output(
     ];
 
     let mut child = Command::new(yt_dlp())
-        .args(&default_args)
-        .args(&args)
+        .args(default_args.iter().chain(args.iter()))
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()

@@ -18,12 +18,14 @@ pub fn libs_dir() -> &'static str {
 
 #[inline]
 pub fn yt_dlp() -> String {
-    format!("{}/yt-dlp", libs_dir())
+    let file_name = if cfg!(windows) { "yt-dlp.exe" } else { "yt-dlp" };
+    format!("{}/{}", libs_dir(), file_name)
 }
 
 #[inline]
 pub fn ffmpeg() -> String {
-    format!("{}/ffmpeg", libs_dir())
+    let file_name = if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" };
+    format!("{}/{}", libs_dir(), file_name)
 }
 
 #[inline]

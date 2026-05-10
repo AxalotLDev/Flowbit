@@ -650,3 +650,130 @@ body {
     white-space: nowrap;
 }
 .btn-ghost:hover { border-color: var(--border2); color: var(--text2); }
+
+/* ── Append these rules to your existing App.css ─────────────────────────── */
+
+/* Tab bar */
+.tab-bar {
+    display: flex;
+    gap: 4px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 4px;
+    margin-bottom: 1.25rem;
+}
+
+.tab-btn {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 7px;
+    height: 34px;
+    background: transparent;
+    border: none;
+    border-radius: 7px;
+    color: var(--text2);
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background .15s, color .15s;
+}
+
+.tab-btn:hover:not(:disabled):not(.active) {
+    background: var(--surface2);
+    color: var(--text);
+}
+
+.tab-btn.active {
+    background: var(--blue-bg);
+    color: var(--blue);
+    border: 1px solid rgba(79, 125, 255, .2);
+}
+
+.tab-btn:disabled {
+    opacity: .45;
+    cursor: not-allowed;
+}
+
+/* Playlist badge */
+.badge-playlist {
+    background: rgba(79, 125, 255, .12);
+    color: #90b4ff;
+    border: 1px solid rgba(79, 125, 255, .25);
+}
+
+/* Playlist track list */
+.playlist-tracks {
+    margin: .75rem 1.25rem 0;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    overflow: hidden;
+}
+
+.playlist-toggle {
+    border-radius: 0;
+}
+
+.playlist-entries {
+    max-height: 240px;
+    overflow-y: auto;
+    background: #0b0d14;
+    scrollbar-width: thin;
+    scrollbar-color: var(--border2) transparent;
+}
+
+.playlist-entries::-webkit-scrollbar { width: 4px; }
+.playlist-entries::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 2px; }
+
+.playlist-entry {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 7px 12px;
+    font-size: 12px;
+    border-bottom: 1px solid rgba(99, 140, 255, .06);
+    transition: background .1s;
+}
+
+.playlist-entry:last-child {
+    border-bottom: none;
+}
+
+.playlist-entry:hover {
+    background: rgba(255, 255, 255, .02);
+}
+
+.playlist-entry-num {
+    flex-shrink: 0;
+    min-width: 22px;
+    text-align: right;
+    color: var(--text3);
+    font-size: 10px;
+    font-family: "SF Mono", monospace;
+    user-select: none;
+}
+
+.playlist-entry-title {
+    flex: 1;
+    color: var(--text2);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.playlist-entry-dur {
+    flex-shrink: 0;
+    color: var(--text3);
+    font-size: 11px;
+    font-family: "SF Mono", monospace;
+}
+
+/* Path hint */
+.path-hint {
+    font-size: 11px;
+    color: var(--text3);
+    margin-top: 6px;
+    line-height: 1.5;
+}
