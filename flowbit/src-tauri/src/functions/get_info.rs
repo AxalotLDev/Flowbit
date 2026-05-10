@@ -1,7 +1,19 @@
-use crate::functions::youtube::fetch_duration;
 use crate::functions::twitch::{fetch_json, TwitchVideoInfo};
+use crate::functions::youtube::fetch_duration;
 use reqwest::Client;
 use serde::Serialize;
+use std::sync::OnceLock;
+
+static HTTP_CLIENT: OnceLock<Client> = OnceLock::new();
+
+fn client() -> &'static Client {
+    HTTP_CLIENT.get_or_init(|| {
+        Client::builder()
+            .timeout(std::time::Duration::from_secs(60))
+            .build()
+            .expect("Failed to build HTTP client")
+    })
+}
 
 #[derive(Serialize)]
 pub struct VideoInfo {
@@ -14,25 +26,22 @@ pub struct VideoInfo {
 
 #[tauri::command]
 pub async fn get_youtube_info(url: String) -> Result<VideoInfo, String> {
-    let client = Client::new();
-    let res = client
-        .get(format!(
-            "https://www.youtube.com/oembed?url={}&format=json",
-            url
-        ))
-        .send()
-        .await
-        .map_err(|e| e.to_string())?;
+    let oembed_url = format!("https://www.youtube.com/oembed?url={}&format=json", url);
+
+    let (oembed_res, duration) =
+        tokio::join!(client().get(&oembed_url).send(), fetch_duration(&url),);
+
+    let res = oembed_res.map_err(|e| e.to_string())?;
 
     if !res.status().is_success() {
         return Err("Failed to fetch video info".into());
     }
 
-    let duration = fetch_duration(&url).await;
     let json = res
         .json::<serde_json::Value>()
         .await
         .map_err(|e| e.to_string())?;
+
     Ok(VideoInfo {
         title: json["title"].as_str().unwrap_or("").to_string(),
         author_name: json["author_name"].as_str().unwrap_or("").to_string(),

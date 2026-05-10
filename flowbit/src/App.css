@@ -515,6 +515,8 @@ body {
     }
 }
 
+/* ── Log Panel ─────────────────────────────────────── */
+
 .log-panel {
     margin: 0 1.25rem 1rem;
     border: 1px solid var(--border);
@@ -537,31 +539,16 @@ body {
     transition: background .15s;
     gap: 8px;
 }
+.log-toggle:hover { background: rgba(99,140,255,.08); color: var(--text); }
 
-.log-toggle:hover {
-    background: rgba(99, 140, 255, .08);
-    color: var(--text);
-}
-
-.log-toggle-left {
-    display: flex;
-    align-items: center;
-    gap: 7px;
-}
-
-.log-toggle-right {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    color: var(--text3);
-    font-size: 11px;
-}
+.log-toggle-left  { display: flex; align-items: center; gap: 7px; }
+.log-toggle-right { display: flex; align-items: center; gap: 8px; color: var(--text3); font-size: 11px; }
 
 .log-badge-error {
     font-size: 10px;
-    background: rgba(239, 83, 80, .15);
+    background: rgba(239,83,80,.15);
     color: var(--red);
-    border: 1px solid rgba(239, 83, 80, .25);
+    border: 1px solid rgba(239,83,80,.25);
     border-radius: 4px;
     padding: 1px 5px;
     font-weight: 600;
@@ -574,19 +561,12 @@ body {
     background: var(--green);
     animation: pulse-dot 1.2s ease-in-out infinite;
 }
-
 @keyframes pulse-dot {
-    0%, 100% {
-        opacity: 1;
-    }
-    50% {
-        opacity: .35;
-    }
+    0%, 100% { opacity: 1; }
+    50%       { opacity: .35; }
 }
 
-.log-count {
-    font-size: 11px;
-}
+.log-count { font-size: 11px; }
 
 .log-body {
     max-height: 260px;
@@ -594,20 +574,13 @@ body {
     background: #0b0d14;
     padding: 8px 0;
     font-family: "SF Mono", "Fira Code", "Cascadia Code", monospace;
-    font-size: 11.5px;
+    font-size: 12px;
     line-height: 1.55;
     scrollbar-width: thin;
     scrollbar-color: var(--border2) transparent;
 }
-
-.log-body::-webkit-scrollbar {
-    width: 4px;
-}
-
-.log-body::-webkit-scrollbar-thumb {
-    background: var(--border2);
-    border-radius: 2px;
-}
+.log-body::-webkit-scrollbar { width: 4px; }
+.log-body::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 2px; }
 
 .log-line {
     display: flex;
@@ -616,10 +589,7 @@ body {
     padding: 1px 12px;
     transition: background .1s;
 }
-
-.log-line:hover {
-    background: rgba(255, 255, 255, .03);
-}
+.log-line:hover { background: rgba(255,255,255,.03); }
 
 .log-line-num {
     flex-shrink: 0;
@@ -635,18 +605,48 @@ body {
     white-space: pre-wrap;
 }
 
-.log-line--info .log-line-text {
-    color: #8a9bb8;
+.log-line--info    .log-line-text { color: #8a9bb8; }
+.log-line--success .log-line-text { color: var(--green); }
+.log-line--warning .log-line-text { color: #ffb74d; }
+.log-line--error   .log-line-text { color: var(--red); }
+
+/* ── Embed actions & fallback ───────────────────────── */
+
+.embed-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 10px;
 }
 
-.log-line--success .log-line-text {
-    color: var(--green);
+.embed-fallback {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    padding: 2rem 1rem;
+    background: rgba(255,255,255,.02);
+    border-radius: 8px;
+    text-align: center;
 }
 
-.log-line--warning .log-line-text {
-    color: #ffb74d;
+.embed-fallback-text {
+    font-size: 13px;
+    color: var(--text2);
+    line-height: 1.6;
 }
 
-.log-line--error .log-line-text {
-    color: var(--red);
+.btn-ghost {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--text3);
+    border-radius: 8px;
+    font-size: 12px;
+    font-weight: 500;
+    padding: 6px 12px;
+    cursor: pointer;
+    transition: border-color .15s, color .15s;
+    white-space: nowrap;
 }
+.btn-ghost:hover { border-color: var(--border2); color: var(--text2); }
