@@ -7,6 +7,7 @@ name = "Flowbit"
 version = "0.1.0"
 dependencies = [
  "dirs",
+ "libc",
  "once_cell",
  "regex",
  "reqwest 0.12.28",

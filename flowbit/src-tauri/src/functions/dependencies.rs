@@ -16,16 +16,25 @@ pub fn libs_dir() -> &'static str {
     LIBS_PATH.get().expect("LIBS_PATH not initialized yet")
 }
 
+/// Собирает путь к файлу в libs через нативный разделитель ОС. НЕЛЬЗЯ использовать
+/// `format!("{}/{}")`: на Windows получается путь со смешанными разделителями
+/// (`C:\...\libs/yt-dlp.exe`), и CreateProcess не находит файл (os error 2).
+#[inline]
+fn lib_path(file_name: &str) -> String {
+    Path::new(libs_dir())
+        .join(file_name)
+        .to_string_lossy()
+        .into_owned()
+}
+
 #[inline]
 pub fn yt_dlp() -> String {
-    let file_name = if cfg!(windows) { "yt-dlp.exe" } else { "yt-dlp" };
-    format!("{}/{}", libs_dir(), file_name)
+    lib_path(if cfg!(windows) { "yt-dlp.exe" } else { "yt-dlp" })
 }
 
 #[inline]
 pub fn ffmpeg() -> String {
-    let file_name = if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" };
-    format!("{}/{}", libs_dir(), file_name)
+    lib_path(if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" })
 }
 
 #[inline]
@@ -46,7 +55,7 @@ pub fn quickjs() -> String {
         "qjs-linux-x86_64"
     };
 
-    format!("{}/{}", libs_dir(), file_name)
+    lib_path(file_name)
 }
 
 #[derive(Debug, Deserialize)]
@@ -130,8 +139,19 @@ pub async fn download_quickjs(libs_dir: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Базовый каталог данных приложения. На Windows — короткий `%APPDATA%\flowbit`
+/// (без reverse-domain идентификатора), на остальных платформах — стандартный
+/// app_data_dir от Tauri (`.../com.axalotl.flowbit`).
+pub fn app_data_root(app: &AppHandle) -> Result<PathBuf, String> {
+    #[cfg(windows)]
+    if let Some(base) = dirs::data_dir() {
+        return Ok(base.join("flowbit"));
+    }
+    app.path().app_data_dir().map_err(|e| e.to_string())
+}
+
 pub async fn install_dependencies(app: &AppHandle) -> Result<(), String> {
-    let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let data_dir = app_data_root(app)?;
 
     let libs_dir = data_dir.join("libs");
     let output_dir = data_dir.join("output");

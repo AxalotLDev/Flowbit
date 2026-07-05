@@ -1,5 +1,5 @@
 use crate::functions::twitch::{fetch_json, TwitchVideoInfo};
-use crate::functions::youtube::fetch_duration;
+use crate::functions::youtube::fetch_duration_and_tracks;
 use reqwest::Client;
 use serde::Serialize;
 use std::sync::OnceLock;
@@ -22,14 +22,17 @@ pub struct VideoInfo {
     pub thumbnail_url: String,
     pub html: String,
     pub duration: Option<u64>,
+    pub audio_tracks: Vec<String>,
 }
 
 #[tauri::command]
 pub async fn get_youtube_info(url: String) -> Result<VideoInfo, String> {
     let oembed_url = format!("https://www.youtube.com/oembed?url={}&format=json", url);
 
-    let (oembed_res, duration) =
-        tokio::join!(client().get(&oembed_url).send(), fetch_duration(&url),);
+    // oembed (быстрые title/автор/обложка) и один -J (длительность + аудиодорожки)
+    // параллельно — карточка и блок выбора дорожки готовы одновременно.
+    let (oembed_res, (duration, audio_tracks)) =
+        tokio::join!(client().get(&oembed_url).send(), fetch_duration_and_tracks(&url),);
 
     let res = oembed_res.map_err(|e| e.to_string())?;
 
@@ -48,6 +51,7 @@ pub async fn get_youtube_info(url: String) -> Result<VideoInfo, String> {
         thumbnail_url: json["thumbnail_url"].as_str().unwrap_or("").to_string(),
         html: json["html"].as_str().unwrap_or("").to_string(),
         duration,
+        audio_tracks,
     })
 }
 
@@ -56,6 +60,7 @@ pub async fn get_twitch_info(url: String) -> Result<TwitchVideoInfo, String> {
     let json = fetch_json(&url).await?;
 
     let is_live = json["is_live"].as_bool().unwrap_or(false);
+    let audio_tracks = crate::functions::youtube::parse_audio_langs(&json);
 
     Ok(TwitchVideoInfo {
         title: json["title"].as_str().unwrap_or("Twitch VOD").into(),
@@ -73,5 +78,6 @@ pub async fn get_twitch_info(url: String) -> Result<TwitchVideoInfo, String> {
         },
         thumbnail_url: json["thumbnail"].as_str().map(String::from),
         view_count: json["view_count"].as_u64(),
+        audio_tracks,
     })
 }

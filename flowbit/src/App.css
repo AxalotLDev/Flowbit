@@ -342,6 +342,15 @@ body {
 
 .card-footer {
     padding: 0 1.25rem 1.25rem;
+    display: flex;
+    gap: 8px;
+}
+
+/* В футере основная кнопка сжимается, освобождая место кнопке отмены. */
+.card-footer .btn-primary {
+    flex: 1 1 auto;
+    min-width: 0;
+    width: auto;
 }
 
 .btn-primary {
@@ -376,6 +385,28 @@ body {
 
 .btn-primary-link {
     margin-top: 10px;
+}
+
+.btn-cancel {
+    flex: 0 0 auto;
+    height: 42px;
+    padding: 0 18px;
+    background: #e5484d;
+    color: #fff;
+    border: none;
+    border-radius: 8px;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background .15s, transform .1s;
+}
+
+.btn-cancel:hover {
+    background: #d13438;
+}
+
+.btn-cancel:active {
+    transform: scale(.98);
 }
 
 .spinner {

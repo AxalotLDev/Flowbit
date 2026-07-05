@@ -3,7 +3,9 @@ mod functions;
 use crate::functions::get_info::{get_twitch_info, get_youtube_info};
 use crate::functions::twitch::download_twitch;
 use crate::functions::valid::{is_twitch_url, is_youtube_url, validate_time_range};
-use crate::functions::youtube::download_video;
+use crate::functions::youtube::{
+    cancel_download, download_video, update_ytdlp, ytdlp_self_update,
+};
 use functions::twitch::TwitchDownloadState;
 use functions::youtube::DownloadState;
 
@@ -31,6 +33,16 @@ pub fn run() {
                     eprintln!("Failed: {}", e);
                 }
             });
+
+            // Фоновая проверка обновлений yt-dlp — не блокирует запуск окна.
+            let handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                match ytdlp_self_update(Some(handle)).await {
+                    Ok(true) => {}
+                    Ok(false) => eprintln!("yt-dlp update check: non-zero exit"),
+                    Err(e) => eprintln!("yt-dlp update check failed: {e}"),
+                }
+            });
             Ok(())
         })
         .manage(DownloadState::new())
@@ -48,6 +60,8 @@ pub fn run() {
             is_playlist_url,
             get_playlist_info,
             download_playlist,
+            update_ytdlp,
+            cancel_download,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

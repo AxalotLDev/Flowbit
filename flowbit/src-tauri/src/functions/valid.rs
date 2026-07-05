@@ -1,16 +1,21 @@
+use once_cell::sync::Lazy;
 use regex::Regex;
+
+// Компилируем регулярки один раз, а не при каждом вызове команды.
+static YOUTUBE_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"^(https?://)?(www\.)?(youtube\.com|youtu\.be)/.+$").unwrap());
+static TWITCH_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"^https?://(www\.)?twitch\.tv/videos/\d+/?$").unwrap());
+static TIME_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"^\d{2}:\d{2}:\d{2}$").unwrap());
 
 #[tauri::command]
 pub fn is_youtube_url(url: String) -> bool {
-    Regex::new(r"^(https?://)?(www\.)?(youtube\.com|youtu\.be)/.+$")
-        .unwrap()
-        .is_match(&url)
+    YOUTUBE_RE.is_match(&url)
 }
 
 #[tauri::command]
 pub fn is_twitch_url(url: String) -> bool {
-    let re = Regex::new(r"^https?://(www\.)?twitch\.tv/videos/\d+/?$").unwrap();
-    re.is_match(url.trim())
+    TWITCH_RE.is_match(url.trim())
 }
 
 #[tauri::command]
@@ -47,9 +52,7 @@ pub fn validate_time_range(
 }
 
 fn parse_time_strict(t: &str) -> Result<u64, String> {
-    let re = Regex::new(r"^\d{2}:\d{2}:\d{2}$").unwrap();
-
-    if !re.is_match(t) {
+    if !TIME_RE.is_match(t) {
         return Err("Формат времени должен быть HH:MM:SS (например 00:05:30)".into());
     }
 

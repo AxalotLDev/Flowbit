@@ -1,4 +1,7 @@
-use crate::functions::youtube::{cleanup_temp, file_mb, quality_to_format, run_ytdlp_output, run_ytdlp_status, DownloadMode, Quality};
+use crate::functions::youtube::{
+    cleanup_temp, file_mb, network_args, quality_to_format, resolve_out_dir, run_ytdlp_output,
+    run_ytdlp_status, DownloadMode, Quality,
+};
 use serde::Serialize;
 use std::path::PathBuf;
 use tauri::AppHandle;
@@ -27,19 +30,27 @@ pub struct PlaylistDownloadResult {
     pub total_size_mb: f64,
 }
 
-fn default_downloads() -> Option<PathBuf> {
-    dirs::download_dir()
-}
-
 /// Returns true when the URL looks like a YouTube/Twitch playlist
 #[tauri::command]
 pub fn is_playlist_url(url: String) -> bool {
     let u = url.trim();
-    // YouTube playlist: contains list= param or /playlist? path
-    let is_yt_playlist = (u.contains("youtube.com") || u.contains("youtu.be"))
-        && (u.contains("list=") || u.contains("/playlist"));
+
+    // Страница плейлиста: youtube.com/playlist?list=...
+    let is_playlist_page = u.contains("youtube.com") && u.contains("/playlist");
+
+    // list= без конкретного видео. Ссылка на одиночное видео (/watch?v=... или
+    // youtu.be/<id>) с параметром &list=... (радио, "Смотреть позже") считается
+    // одиночным видео, а не плейлистом.
+    let points_to_single_video =
+        (u.contains("watch") && u.contains("v=")) || u.contains("youtu.be");
+    let is_list_only =
+        u.contains("youtube.com") && u.contains("list=") && !points_to_single_video;
+
+    let is_yt_playlist = is_playlist_page || is_list_only;
+
     // Twitch collection / channel videos page – add more patterns as needed
     let is_twitch_playlist = u.contains("twitch.tv") && u.contains("/videos");
+
     is_yt_playlist || is_twitch_playlist
 }
 
@@ -114,30 +125,33 @@ pub async fn download_playlist(
     quality: Option<Quality>,
     mode: Option<DownloadMode>,
 ) -> Result<PlaylistDownloadResult, String> {
+    crate::functions::youtube::begin_download();
     let app_opt = Some(app.clone());
 
-    let base_dir = path
-        .map(PathBuf::from)
-        .or_else(default_downloads)
-        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| ".".into()));
+    let base_dir = resolve_out_dir(&app, path);
 
     tokio::fs::create_dir_all(&base_dir)
         .await
         .map_err(|e| format!("Cannot create directory: {e}"))?;
 
-    // Determine output template – yt-dlp will create the playlist sub-folder automatically
-    // %(playlist_title)s/%(playlist_index)s - %(title)s.%(ext)s
-    let out_tmpl = base_dir
-        .join("%(playlist_title)s/%(playlist_index)02d - %(title)s.%(ext)s")
-        .to_string_lossy()
-        .into_owned();
+    // Относительный шаблон -o (yt-dlp сам создаёт подпапку плейлиста), каталоги
+    // задаём через -P. Абсолютный путь в -o заставил бы yt-dlp игнорировать --paths.
+    let out_tmpl = "%(playlist_title)s/%(playlist_index)02d - %(title)s.%(ext)s".to_string();
+
+    let tmp_dir = base_dir.join(".flowbit-tmp");
+    let _ = tokio::fs::create_dir_all(&tmp_dir).await;
 
     let mut args: Vec<String> = vec![
         "--yes-playlist".into(),
         "--no-warnings".into(),
+        "-P".into(),
+        format!("home:{}", base_dir.to_string_lossy()),
+        "-P".into(),
+        format!("temp:{}", tmp_dir.to_string_lossy()),
         "-o".into(),
         out_tmpl,
     ];
+    args.extend(network_args());
 
     match mode.unwrap_or(DownloadMode::Video) {
         DownloadMode::Audio => {
@@ -168,6 +182,9 @@ pub async fn download_playlist(
         run_ytdlp_status(args, "Playlist download failed".into(), app_opt.clone()).await?;
 
     cleanup_temp(&base_dir).await;
+    // Убираем временный каталог до подсчёта файлов и поиска папки плейлиста,
+    // иначе newest_subdir мог бы принять его за папку с загрузками.
+    let _ = tokio::fs::remove_dir_all(&tmp_dir).await;
 
     if !status.success() {
         return Err("Playlist download failed — check logs for details".into());

@@ -1,11 +1,12 @@
-use crate::functions::youtube::{fetch_duration, run_ytdlp_output, section_changed, DownloadResult};
+use crate::functions::youtube::{
+    fetch_duration, network_args, resolve_out_dir, run_ffmpeg, run_ytdlp_output, section_changed,
+    DownloadResult,
+};
 use crate::functions::get_info::get_twitch_info;
-use crate::functions::dependencies::ffmpeg;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 use tauri::{AppHandle, Emitter, State};
-use tokio::process::Command;
 
 #[derive(Serialize, Clone)]
 pub struct TwitchVideoInfo {
@@ -15,6 +16,7 @@ pub struct TwitchVideoInfo {
     pub is_live: bool,
     pub thumbnail_url: Option<String>,
     pub view_count: Option<u64>,
+    pub audio_tracks: Vec<String>,
 }
 
 pub struct TwitchDownloadState;
@@ -54,17 +56,6 @@ pub enum DownloadMode {
     Audio,
 }
 
-fn default_downloads() -> PathBuf {
-    if let Some(home) = dirs::home_dir() {
-        let downloads = home.join("Downloads");
-        if downloads.exists() {
-            return downloads;
-        }
-        return home;
-    }
-    std::env::current_dir().unwrap_or_else(|_| ".".into())
-}
-
 fn sanitize(name: &str) -> String {
     let mut out = String::with_capacity(name.len());
     for c in name.chars() {
@@ -77,8 +68,9 @@ fn sanitize(name: &str) -> String {
     if s.is_empty() {
         return "stream".into();
     }
-    if s.len() > 200 {
-        s[..200].to_string()
+    // По символам, а не по байтам — иначе паника на границе UTF-8.
+    if s.chars().count() > 200 {
+        s.chars().take(200).collect()
     } else {
         s.to_string()
     }
@@ -126,9 +118,11 @@ pub async fn download_twitch(
     start: Option<String>,
     end: Option<String>,
     duration: Option<u64>,
+    audio_lang: Option<String>,
 ) -> Result<DownloadResult, String> {
+    crate::functions::youtube::begin_download();
     let app_opt = Some(app.clone());
-    let out_dir = path.map(PathBuf::from).unwrap_or_else(default_downloads);
+    let out_dir = resolve_out_dir(&app, path);
 
     tokio::fs::create_dir_all(&out_dir)
         .await
@@ -138,10 +132,9 @@ pub async fn download_twitch(
     let name = sanitize(&info.title);
     let is_audio = matches!(mode, Some(DownloadMode::Audio));
 
-    let out_tmpl = out_dir
-        .join(format!("{name}.%(ext)s"))
-        .to_string_lossy()
-        .into_owned();
+    // Относительный -o + каталоги через -P (абсолютный путь заставляет yt-dlp
+    // игнорировать --paths с предупреждением).
+    let out_tmpl = format!("{name}.%(ext)s");
 
     let start_str = start.as_deref().unwrap_or("00:00:00").to_string();
 
@@ -165,30 +158,39 @@ pub async fn download_twitch(
 
     let need_section = section_changed(&start_str, &end_str, resolved_duration);
 
+    let tmp_dir = out_dir.join(".flowbit-tmp");
+    let _ = tokio::fs::create_dir_all(&tmp_dir).await;
+
     let mut args: Vec<String> = vec![
         "-o".into(),
         out_tmpl,
         "--no-playlist".into(),
+        "-P".into(),
+        format!("home:{}", out_dir.to_string_lossy()),
+        "-P".into(),
+        format!("temp:{}", tmp_dir.to_string_lossy()),
         "--print".into(),
         "after_move:filepath".into(),
     ];
+    args.extend(network_args());
 
+    let lang = audio_lang.as_deref().filter(|l| !l.is_empty());
     if is_audio {
-        args.extend(vec![
-            "-f".into(),
-            "bestaudio".into(),
-            "-x".into(),
-            "--audio-quality".into(),
-            "0".into(),
-        ]);
+        let af = match lang {
+            Some(l) => format!("bestaudio[language={l}]/bestaudio"),
+            None => "bestaudio".to_string(),
+        };
+        args.extend(["-f".into(), af, "-x".into(), "--audio-quality".into(), "0".into()]);
     } else {
-        args.extend(vec![
-            "-f".into(),
-            quality.unwrap_or(TwitchQuality::Best).fmt().into(),
-            "--merge-output-format".into(),
-            "mp4".into(),
-        ]);
-        args.push("--postprocessor-args".into());
+        let base = quality.unwrap_or(TwitchQuality::Best).fmt();
+        let vf = match lang {
+            Some(l) => {
+                let with_lang = base.replacen("+bestaudio", &format!("+bestaudio[language={l}]"), 1);
+                format!("{with_lang}/{base}")
+            }
+            None => base.to_string(),
+        };
+        args.extend(["-f".into(), vf, "--merge-output-format".into(), "mp4".into()]);
     }
 
     args.push(url.clone());
@@ -196,6 +198,7 @@ pub async fn download_twitch(
     let output = run_ytdlp_output(args, "yt-dlp failed:".to_string(), app_opt.clone()).await?;
 
     cleanup_temp(&out_dir).await;
+    let _ = tokio::fs::remove_dir_all(&tmp_dir).await;
 
     if !output.status.success() {
         return Err("yt-dlp failed".into());
@@ -237,11 +240,7 @@ pub async fn download_twitch(
 
         let _ = app.emit("ytdlp-log", "[ffmpeg] Clipping stream…");
 
-        let ffmpeg_status = Command::new(ffmpeg())
-            .args(&ffmpeg_args)
-            .status()
-            .await
-            .map_err(|e| format!("ffmpeg failed: {e}"))?;
+        let ffmpeg_status = run_ffmpeg(ffmpeg_args).await?;
 
         if !ffmpeg_status.success() {
             return Err("ffmpeg clipping failed".into());

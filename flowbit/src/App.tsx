@@ -15,6 +15,7 @@ interface YoutubeInfo {
     author_name: string;
     html: string;
     duration: number | null;
+    audio_tracks: string[];
 }
 
 interface TwitchInfo {
@@ -23,6 +24,7 @@ interface TwitchInfo {
     duration: number | null;
     is_live: boolean;
     thumbnail_url: string | null;
+    audio_tracks: string[];
 }
 
 interface DownloadResult {
@@ -56,6 +58,18 @@ function formatDuration(s: number) {
     const m = Math.floor((s % 3600) / 60);
     const sec = s % 60;
     return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(sec).padStart(2, "0")}`;
+}
+
+// Должно совпадать с CANCEL_MSG в бэкенде (youtube.rs).
+const CANCEL_MSG = "Загрузка отменена";
+
+// Код языка ("en", "ru", "en-US") → название на русском ("английский", …).
+function langName(code: string): string {
+    try {
+        return new Intl.DisplayNames(["ru"], {type: "language"}).of(code) ?? code;
+    } catch {
+        return code;
+    }
 }
 
 const QUALITIES: { value: Quality; label: string }[] = [
@@ -116,21 +130,20 @@ function extractYouTubeId(url: string): string | null {
     }
 }
 
-function YouTubeEmbed({videoId, url}: { videoId: string; url: string }) {
-    const src = `https://www.youtube-nocookie.com/embed/${videoId}?rel=0&modestbranding=1`;
+// Встроенный YouTube-плеер (iframe) не работает в Tauri на Linux/webkit: YouTube
+// отклоняет embed из-за отсутствия валидного Referer у протокола tauri://localhost
+// (открытый баг tauri#14422). Поэтому показываем превью-обложку, а сам плеер
+// открываем во внешнем браузере — обычный <img> под это ограничение не попадает.
+function YouTubePreview({videoId, url}: { videoId: string; url: string }) {
+    const thumb = `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`;
     return (
-        <div className="embed-wrap">
-            <iframe
-                src={src}
-                allowFullScreen
-                referrerPolicy="strict-origin-when-cross-origin"
-                allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+        <div className="thumb-wrap">
+            <img
+                src={thumb}
+                alt="Превью видео"
+                style={{cursor: "pointer"}}
+                onClick={async () => await openUrl(url)}
             />
-            <div className="embed-actions">
-                <button className="btn-primary btn-primary-link" onClick={async () => await openUrl(url)}>
-                    Открыть в YouTube
-                </button>
-            </div>
         </div>
     );
 }
@@ -199,6 +212,8 @@ export default function App() {
     // shared
     const [quality, setQuality] = useState<Quality>("best");
     const [mode, setMode] = useState<DownloadMode>("video");
+    const [audioTracks, setAudioTracks] = useState<string[]>([]);   // коды языков аудиодорожек
+    const [audioLang, setAudioLang] = useState<string | null>(null);
     const [urlError, setUrlError] = useState("");
     const [downloading, setDownloading] = useState(false);
     const [error, setError] = useState("");
@@ -242,6 +257,13 @@ export default function App() {
         setResult(null);
         setPlaylistResult(null);
         setError("");
+        // Сбрасываем время фрагмента, иначе оно "залипает" от прошлого видео,
+        // если у нового длительность не получена (частый случай на Windows).
+        setStartTime("00:00:00");
+        setEndTime("00:00:00");
+        setTimeError("");
+        setAudioTracks([]);
+        setAudioLang(null);
 
         const controller = new AbortController();
         abortRef.current = controller;
@@ -267,6 +289,7 @@ export default function App() {
                     const info = await invoke<YoutubeInfo>("get_youtube_info", {url});
                     if (!controller.signal.aborted) {
                         setYoutubeInfo(info);
+                        setAudioTracks(info.audio_tracks ?? []);
                         const d = typeof info.duration === "number" ? info.duration : null;
                         if (d != null && d > 0) {
                             setStartTime("00:00:00");
@@ -279,6 +302,7 @@ export default function App() {
                     const info = await invoke<TwitchInfo>("get_twitch_info", {url});
                     if (!controller.signal.aborted) {
                         setTwitchInfo(info);
+                        setAudioTracks(info.audio_tracks ?? []);
                         const d = typeof info.duration === "number" ? info.duration : null;
                         if (d != null && d > 0) {
                             setStartTime("00:00:00");
@@ -316,6 +340,11 @@ export default function App() {
         setError("");
         setLoadingInfo(false);
         setDownloadPath(null);
+        setStartTime("00:00:00");
+        setEndTime("00:00:00");
+        setTimeError("");
+        setAudioTracks([]);
+        setAudioLang(null);
     }
 
     const handleDownload = useCallback(async () => {
@@ -345,14 +374,16 @@ export default function App() {
                 path: downloadPath ?? null,
                 start: startTime, end: endTime,
                 duration: youtubeInfo?.duration ?? twitchInfo?.duration ?? null,
+                audioLang: audioLang ?? null,
             });
             setResult(res);
         } catch (e) {
-            setError(typeof e === "string" ? e : String(e));
+            const msg = typeof e === "string" ? e : String(e);
+            if (msg !== CANCEL_MSG) setError(msg);   // отмену не показываем как ошибку
         } finally {
             setDownloading(false);
         }
-    }, [url, platform, urlKind, quality, mode, downloading, downloadPath, startTime, endTime, youtubeInfo, twitchInfo]);
+    }, [url, platform, urlKind, quality, mode, downloading, downloadPath, startTime, endTime, youtubeInfo, twitchInfo, audioLang]);
 
     const handlePlaylistDownload = useCallback(async () => {
         if (!playlistInfo || downloading) return;
@@ -368,11 +399,20 @@ export default function App() {
             });
             setPlaylistResult(res);
         } catch (e) {
-            setError(typeof e === "string" ? e : String(e));
+            const msg = typeof e === "string" ? e : String(e);
+            if (msg !== CANCEL_MSG) setError(msg);   // отмену не показываем как ошибку
         } finally {
             setDownloading(false);
         }
     }, [url, playlistInfo, quality, mode, downloadPath, downloading]);
+
+    const handleCancel = useCallback(async () => {
+        try {
+            await invoke("cancel_download");
+        } catch {
+            /* игнорируем — команда только шлёт сигнал отмены */
+        }
+    }, []);
 
     const hasInfo = youtubeInfo !== null || twitchInfo !== null;
     const videoTitle = youtubeInfo?.title ?? twitchInfo?.title ?? "";
@@ -461,7 +501,7 @@ export default function App() {
                     {youtubeInfo && (() => {
                         const videoId = extractYouTubeId(url);
                         if (!videoId) return null;
-                        return <YouTubeEmbed videoId={videoId} url={url}/>;
+                        return <YouTubePreview videoId={videoId} url={url}/>;
                     })()}
 
                     {twitchInfo?.thumbnail_url && (
@@ -500,6 +540,26 @@ export default function App() {
                         </div>
                     </div>
 
+                    {audioTracks.length > 1 && (
+                        <div className="quality-section" style={{paddingTop: 0}}>
+                            <p className="quality-label">Аудиодорожка</p>
+                            <div className="quality-pills">
+                                <button
+                                    className={`quality-pill${audioLang === null ? " active" : ""}`}
+                                    onClick={() => setAudioLang(null)} disabled={downloading}>
+                                    Авто
+                                </button>
+                                {audioTracks.map((code) => (
+                                    <button key={code}
+                                            className={`quality-pill${audioLang === code ? " active" : ""}`}
+                                            onClick={() => setAudioLang(code)} disabled={downloading}>
+                                        {langName(code)}
+                                    </button>
+                                ))}
+                            </div>
+                        </div>
+                    )}
+
                     {mode === "video" && (
                         <div className="quality-section" style={{paddingTop: 0}}>
                             <p className="quality-label">Качество</p>
@@ -531,7 +591,7 @@ export default function App() {
                                 });
                                 if (typeof selected === "string") setDownloadPath(selected);
                             }}>
-                                📁 {downloadPath ? downloadPath.split("/").pop() : "Загрузки (по умолчанию)"}
+                                📁 {downloadPath ? downloadPath.split(/[\\/]/).filter(Boolean).pop() : "Загрузки (по умолчанию)"}
                             </button>
                         </div>
                     )}
@@ -584,6 +644,9 @@ export default function App() {
                         <button className="btn-primary" onClick={handleDownload} disabled={downloading}>
                             {singleDownloadLabel()}
                         </button>
+                        {downloading && (
+                            <button className="btn-cancel" onClick={handleCancel}>Отменить</button>
+                        )}
                     </div>
                 </div>
             )}
@@ -661,6 +724,26 @@ export default function App() {
                         </div>
                     </div>
 
+                    {audioTracks.length > 1 && (
+                        <div className="quality-section" style={{paddingTop: 0}}>
+                            <p className="quality-label">Аудиодорожка</p>
+                            <div className="quality-pills">
+                                <button
+                                    className={`quality-pill${audioLang === null ? " active" : ""}`}
+                                    onClick={() => setAudioLang(null)} disabled={downloading}>
+                                    Авто
+                                </button>
+                                {audioTracks.map((code) => (
+                                    <button key={code}
+                                            className={`quality-pill${audioLang === code ? " active" : ""}`}
+                                            onClick={() => setAudioLang(code)} disabled={downloading}>
+                                        {langName(code)}
+                                    </button>
+                                ))}
+                            </div>
+                        </div>
+                    )}
+
                     {mode === "video" && (
                         <div className="quality-section" style={{paddingTop: 0}}>
                             <p className="quality-label">Качество</p>
@@ -686,7 +769,7 @@ export default function App() {
                             });
                             if (typeof selected === "string") setDownloadPath(selected);
                         }}>
-                            📁 {downloadPath ? downloadPath.split("/").pop() : "Загрузки (по умолчанию)"}
+                            📁 {downloadPath ? downloadPath.split(/[\\/]/).filter(Boolean).pop() : "Загрузки (по умолчанию)"}
                         </button>
                         <p className="path-hint">Плейлист будет сохранён в отдельную папку внутри выбранного
                             каталога</p>
@@ -729,6 +812,9 @@ export default function App() {
                         <button className="btn-primary" onClick={handlePlaylistDownload} disabled={downloading}>
                             {playlistDownloadLabel()}
                         </button>
+                        {downloading && (
+                            <button className="btn-cancel" onClick={handleCancel}>Отменить</button>
+                        )}
                     </div>
                 </div>
             )}
