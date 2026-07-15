@@ -71,7 +71,7 @@ pub async fn get_playlist_info(url: String) -> Result<PlaylistInfo, String> {
         return Err("yt-dlp returned an error for this playlist URL".into());
     }
 
-    let text = String::from_utf8_lossy(&output.stdout);
+    let text = crate::functions::youtube::decode_output(&output.stdout);
     let mut lines = text.lines();
 
     // First line contains playlist-level fields
@@ -125,7 +125,7 @@ pub async fn download_playlist(
     quality: Option<Quality>,
     mode: Option<DownloadMode>,
 ) -> Result<PlaylistDownloadResult, String> {
-    crate::functions::youtube::begin_download();
+    let _guard = crate::functions::youtube::DownloadGuard::new();
     let app_opt = Some(app.clone());
 
     let base_dir = resolve_out_dir(&app, path);

@@ -16,6 +16,8 @@ interface YoutubeInfo {
     html: string;
     duration: number | null;
     audio_tracks: string[];
+    video_codecs: string[];
+    audio_codecs: string[];
 }
 
 interface TwitchInfo {
@@ -25,6 +27,8 @@ interface TwitchInfo {
     is_live: boolean;
     thumbnail_url: string | null;
     audio_tracks: string[];
+    video_codecs: string[];
+    audio_codecs: string[];
 }
 
 interface DownloadResult {
@@ -80,6 +84,10 @@ const QUALITIES: { value: Quality; label: string }[] = [
     {value: "worst", label: "Худшее"},
 ];
 
+// Понятные названия кодеков (короткие имена приходят с бэкенда).
+const VCODEC_NAMES: Record<string, string> = {h264: "H.264", vp9: "VP9", av1: "AV1"};
+const ACODEC_NAMES: Record<string, string> = {aac: "AAC", opus: "Opus"};
+
 const SearchIcon = () => (
     <svg viewBox="0 0 24 24" fill="none" strokeWidth="2" stroke="currentColor">
         <circle cx="11" cy="11" r="8"/>
@@ -122,8 +130,14 @@ function classifyLine(line: string): "error" | "warning" | "success" | "info" {
 function extractYouTubeId(url: string): string | null {
     try {
         const u = new URL(url);
-        if (u.hostname.includes("youtu.be")) return u.pathname.slice(1);
-        if (u.hostname.includes("youtube.com")) return u.searchParams.get("v");
+        if (u.hostname.includes("youtu.be")) return u.pathname.slice(1).split("/")[0] || null;
+        if (u.hostname.includes("youtube.com")) {
+            // Обычные ролики — ?v=ID; shorts/embed/live хранят ID в пути.
+            const v = u.searchParams.get("v");
+            if (v) return v;
+            const m = u.pathname.match(/^\/(?:shorts|embed|live)\/([^/?#]+)/);
+            return m ? m[1] : null;
+        }
         return null;
     } catch {
         return null;
@@ -214,6 +228,10 @@ export default function App() {
     const [mode, setMode] = useState<DownloadMode>("video");
     const [audioTracks, setAudioTracks] = useState<string[]>([]);   // коды языков аудиодорожек
     const [audioLang, setAudioLang] = useState<string | null>(null);
+    const [videoCodecs, setVideoCodecs] = useState<string[]>([]);   // доступные кодеки видео
+    const [audioCodecs, setAudioCodecs] = useState<string[]>([]);   // доступные кодеки аудио
+    const [videoCodec, setVideoCodec] = useState<string | null>(null); // null = авто
+    const [audioCodec, setAudioCodec] = useState<string | null>(null);
     const [urlError, setUrlError] = useState("");
     const [downloading, setDownloading] = useState(false);
     const [error, setError] = useState("");
@@ -264,6 +282,10 @@ export default function App() {
         setTimeError("");
         setAudioTracks([]);
         setAudioLang(null);
+        setVideoCodecs([]);
+        setAudioCodecs([]);
+        setVideoCodec(null);
+        setAudioCodec(null);
 
         const controller = new AbortController();
         abortRef.current = controller;
@@ -290,6 +312,8 @@ export default function App() {
                     if (!controller.signal.aborted) {
                         setYoutubeInfo(info);
                         setAudioTracks(info.audio_tracks ?? []);
+                        setVideoCodecs(info.video_codecs ?? []);
+                        setAudioCodecs(info.audio_codecs ?? []);
                         const d = typeof info.duration === "number" ? info.duration : null;
                         if (d != null && d > 0) {
                             setStartTime("00:00:00");
@@ -303,6 +327,8 @@ export default function App() {
                     if (!controller.signal.aborted) {
                         setTwitchInfo(info);
                         setAudioTracks(info.audio_tracks ?? []);
+                        setVideoCodecs(info.video_codecs ?? []);
+                        setAudioCodecs(info.audio_codecs ?? []);
                         const d = typeof info.duration === "number" ? info.duration : null;
                         if (d != null && d > 0) {
                             setStartTime("00:00:00");
@@ -345,6 +371,10 @@ export default function App() {
         setTimeError("");
         setAudioTracks([]);
         setAudioLang(null);
+        setVideoCodecs([]);
+        setAudioCodecs([]);
+        setVideoCodec(null);
+        setAudioCodec(null);
     }
 
     const handleDownload = useCallback(async () => {
@@ -375,6 +405,8 @@ export default function App() {
                 start: startTime, end: endTime,
                 duration: youtubeInfo?.duration ?? twitchInfo?.duration ?? null,
                 audioLang: audioLang ?? null,
+                videoCodec: videoCodec ?? null,
+                audioCodec: audioCodec ?? null,
             });
             setResult(res);
         } catch (e) {
@@ -383,7 +415,7 @@ export default function App() {
         } finally {
             setDownloading(false);
         }
-    }, [url, platform, urlKind, quality, mode, downloading, downloadPath, startTime, endTime, youtubeInfo, twitchInfo, audioLang]);
+    }, [url, platform, urlKind, quality, mode, downloading, downloadPath, startTime, endTime, youtubeInfo, twitchInfo, audioLang, videoCodec, audioCodec]);
 
     const handlePlaylistDownload = useCallback(async () => {
         if (!playlistInfo || downloading) return;
@@ -554,6 +586,44 @@ export default function App() {
                                             className={`quality-pill${audioLang === code ? " active" : ""}`}
                                             onClick={() => setAudioLang(code)} disabled={downloading}>
                                         {langName(code)}
+                                    </button>
+                                ))}
+                            </div>
+                        </div>
+                    )}
+
+                    {mode === "video" && videoCodecs.length > 1 && (
+                        <div className="quality-section" style={{paddingTop: 0}}>
+                            <p className="quality-label">Кодек видео</p>
+                            <div className="quality-pills">
+                                <button className={`quality-pill${videoCodec === null ? " active" : ""}`}
+                                        onClick={() => setVideoCodec(null)} disabled={downloading}>
+                                    Авто
+                                </button>
+                                {videoCodecs.map((c) => (
+                                    <button key={c}
+                                            className={`quality-pill${videoCodec === c ? " active" : ""}`}
+                                            onClick={() => setVideoCodec(c)} disabled={downloading}>
+                                        {VCODEC_NAMES[c] ?? c}
+                                    </button>
+                                ))}
+                            </div>
+                        </div>
+                    )}
+
+                    {audioCodecs.length > 1 && (
+                        <div className="quality-section" style={{paddingTop: 0}}>
+                            <p className="quality-label">Кодек аудио</p>
+                            <div className="quality-pills">
+                                <button className={`quality-pill${audioCodec === null ? " active" : ""}`}
+                                        onClick={() => setAudioCodec(null)} disabled={downloading}>
+                                    Авто
+                                </button>
+                                {audioCodecs.map((c) => (
+                                    <button key={c}
+                                            className={`quality-pill${audioCodec === c ? " active" : ""}`}
+                                            onClick={() => setAudioCodec(c)} disabled={downloading}>
+                                        {ACODEC_NAMES[c] ?? c}
                                     </button>
                                 ))}
                             </div>

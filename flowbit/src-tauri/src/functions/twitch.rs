@@ -1,6 +1,6 @@
 use crate::functions::youtube::{
-    fetch_duration, network_args, resolve_out_dir, run_ffmpeg, run_ytdlp_output, section_changed,
-    DownloadResult,
+    fetch_duration, network_args, read_printed_path, resolve_out_dir, run_ffmpeg, run_ytdlp_output,
+    section_changed, DownloadResult,
 };
 use crate::functions::get_info::get_twitch_info;
 use serde::{Deserialize, Serialize};
@@ -17,6 +17,8 @@ pub struct TwitchVideoInfo {
     pub thumbnail_url: Option<String>,
     pub view_count: Option<u64>,
     pub audio_tracks: Vec<String>,
+    pub video_codecs: Vec<String>,
+    pub audio_codecs: Vec<String>,
 }
 
 pub struct TwitchDownloadState;
@@ -56,26 +58,6 @@ pub enum DownloadMode {
     Audio,
 }
 
-fn sanitize(name: &str) -> String {
-    let mut out = String::with_capacity(name.len());
-    for c in name.chars() {
-        match c {
-            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' | '\0' => out.push('_'),
-            _ => out.push(c),
-        }
-    }
-    let s = out.trim();
-    if s.is_empty() {
-        return "stream".into();
-    }
-    // По символам, а не по байтам — иначе паника на границе UTF-8.
-    if s.chars().count() > 200 {
-        s.chars().take(200).collect()
-    } else {
-        s.to_string()
-    }
-}
-
 #[inline]
 fn mb(len: u64) -> f64 {
     len as f64 / 1_048_576.0
@@ -102,9 +84,10 @@ pub async fn fetch_json(url: &str) -> Result<Value, String> {
     let args: Vec<String> = vec!["--dump-json".into(), "--no-playlist".into(), url.into()];
     let out = run_ytdlp_output(args, "yt-dlp error:".to_string(), None).await?;
     if !out.status.success() {
-        return Err(String::from_utf8_lossy(&out.stderr).to_string());
+        return Err(crate::functions::youtube::decode_output(&out.stderr));
     }
-    serde_json::from_slice(&out.stdout).map_err(|e| format!("JSON error: {e}"))
+    serde_json::from_str(&crate::functions::youtube::decode_output(&out.stdout))
+        .map_err(|e| format!("JSON error: {e}"))
 }
 
 #[tauri::command]
@@ -119,8 +102,14 @@ pub async fn download_twitch(
     end: Option<String>,
     duration: Option<u64>,
     audio_lang: Option<String>,
+    // Twitch-VOD всегда H.264/AAC — выбор кодека здесь ни на что не влияет,
+    // принимаем параметры лишь ради единого фронтенд-API. Кодек аудио задаёт
+    // только контейнер (на случай, если когда-нибудь появится opus).
+    video_codec: Option<String>,
+    audio_codec: Option<String>,
 ) -> Result<DownloadResult, String> {
-    crate::functions::youtube::begin_download();
+    let _ = video_codec;
+    let _guard = crate::functions::youtube::DownloadGuard::new();
     let app_opt = Some(app.clone());
     let out_dir = resolve_out_dir(&app, path);
 
@@ -128,13 +117,10 @@ pub async fn download_twitch(
         .await
         .map_err(|e| e.to_string())?;
 
-    let info = get_twitch_info(url.clone()).await?;
-    let name = sanitize(&info.title);
+    // Валидируем URL (ошибка пробросится). Имя файла отдаём yt-dlp через
+    // %(title)s — сами из title не строим, иначе кириллица бьётся (cp1251 stdout).
+    let _ = get_twitch_info(url.clone()).await?;
     let is_audio = matches!(mode, Some(DownloadMode::Audio));
-
-    // Относительный -o + каталоги через -P (абсолютный путь заставляет yt-dlp
-    // игнорировать --paths с предупреждением).
-    let out_tmpl = format!("{name}.%(ext)s");
 
     let start_str = start.as_deref().unwrap_or("00:00:00").to_string();
 
@@ -160,17 +146,20 @@ pub async fn download_twitch(
 
     let tmp_dir = out_dir.join(".flowbit-tmp");
     let _ = tokio::fs::create_dir_all(&tmp_dir).await;
+    let path_file = tmp_dir.join("__filepath.txt");
+    let _ = tokio::fs::remove_file(&path_file).await;
 
     let mut args: Vec<String> = vec![
         "-o".into(),
-        out_tmpl,
+        "%(title)s.%(ext)s".into(),
         "--no-playlist".into(),
         "-P".into(),
         format!("home:{}", out_dir.to_string_lossy()),
         "-P".into(),
         format!("temp:{}", tmp_dir.to_string_lossy()),
-        "--print".into(),
+        "--print-to-file".into(),
         "after_move:filepath".into(),
+        path_file.to_string_lossy().into_owned(),
     ];
     args.extend(network_args());
 
@@ -190,12 +179,16 @@ pub async fn download_twitch(
             }
             None => base.to_string(),
         };
-        args.extend(["-f".into(), vf, "--merge-output-format".into(), "mp4".into()]);
+        let container =
+            crate::functions::youtube::merge_container(audio_codec.as_deref().filter(|c| !c.is_empty()));
+        args.extend(["-f".into(), vf, "--merge-output-format".into(), container.into()]);
     }
 
     args.push(url.clone());
 
     let output = run_ytdlp_output(args, "yt-dlp failed:".to_string(), app_opt.clone()).await?;
+
+    let real_path = read_printed_path(&path_file).await;
 
     cleanup_temp(&out_dir).await;
     let _ = tokio::fs::remove_dir_all(&tmp_dir).await;
@@ -204,18 +197,7 @@ pub async fn download_twitch(
         return Err("yt-dlp failed".into());
     }
 
-    let real_path = String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .last()
-        .unwrap_or("")
-        .trim()
-        .to_string();
-
-    if real_path.is_empty() {
-        return Err("Cannot resolve output file path".into());
-    }
-
-    let out_file = PathBuf::from(real_path);
+    let out_file = PathBuf::from(real_path.ok_or("Cannot resolve output file path")?);
 
     if need_section {
         let temp_input = out_file.clone();

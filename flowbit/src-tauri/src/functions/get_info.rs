@@ -1,5 +1,5 @@
 use crate::functions::twitch::{fetch_json, TwitchVideoInfo};
-use crate::functions::youtube::fetch_duration_and_tracks;
+use crate::functions::youtube::fetch_yt_meta;
 use reqwest::Client;
 use serde::Serialize;
 use std::sync::OnceLock;
@@ -23,35 +23,64 @@ pub struct VideoInfo {
     pub html: String,
     pub duration: Option<u64>,
     pub audio_tracks: Vec<String>,
+    pub video_codecs: Vec<String>,
+    pub audio_codecs: Vec<String>,
 }
 
 #[tauri::command]
 pub async fn get_youtube_info(url: String) -> Result<VideoInfo, String> {
     let oembed_url = format!("https://www.youtube.com/oembed?url={}&format=json", url);
 
-    // oembed (быстрые title/автор/обложка) и один -J (длительность + аудиодорожки)
-    // параллельно — карточка и блок выбора дорожки готовы одновременно.
-    let (oembed_res, (duration, audio_tracks)) =
-        tokio::join!(client().get(&oembed_url).send(), fetch_duration_and_tracks(&url),);
+    // oembed (быстрые title/автор/обложка) и один -J (длительность + аудиодорожки
+    // + запасные метаданные) параллельно — карточка и блок выбора дорожки готовы
+    // одновременно. Если oembed недоступен (401/404 у видео с запретом встраивания
+    // или возрастным ограничением) — берём всё из yt-dlp, а не падаем с ошибкой.
+    let (oembed_res, meta) =
+        tokio::join!(client().get(&oembed_url).send(), fetch_yt_meta(&url));
 
-    let res = oembed_res.map_err(|e| e.to_string())?;
+    let oembed_json = match oembed_res {
+        Ok(res) if res.status().is_success() => res.json::<serde_json::Value>().await.ok(),
+        _ => None,
+    };
 
-    if !res.status().is_success() {
+    let title = oembed_json
+        .as_ref()
+        .and_then(|j| j["title"].as_str())
+        .map(String::from)
+        .or(meta.title)
+        .unwrap_or_default();
+    let author_name = oembed_json
+        .as_ref()
+        .and_then(|j| j["author_name"].as_str())
+        .map(String::from)
+        .or(meta.author)
+        .unwrap_or_default();
+    let thumbnail_url = oembed_json
+        .as_ref()
+        .and_then(|j| j["thumbnail_url"].as_str())
+        .map(String::from)
+        .or(meta.thumbnail)
+        .unwrap_or_default();
+    let html = oembed_json
+        .as_ref()
+        .and_then(|j| j["html"].as_str())
+        .unwrap_or("")
+        .to_string();
+
+    // Совсем ничего не вытащили (и oembed, и yt-dlp пусты) — только тогда ошибка.
+    if title.is_empty() && thumbnail_url.is_empty() {
         return Err("Failed to fetch video info".into());
     }
 
-    let json = res
-        .json::<serde_json::Value>()
-        .await
-        .map_err(|e| e.to_string())?;
-
     Ok(VideoInfo {
-        title: json["title"].as_str().unwrap_or("").to_string(),
-        author_name: json["author_name"].as_str().unwrap_or("").to_string(),
-        thumbnail_url: json["thumbnail_url"].as_str().unwrap_or("").to_string(),
-        html: json["html"].as_str().unwrap_or("").to_string(),
-        duration,
-        audio_tracks,
+        title,
+        author_name,
+        thumbnail_url,
+        html,
+        duration: meta.duration,
+        audio_tracks: meta.audio_tracks,
+        video_codecs: meta.video_codecs,
+        audio_codecs: meta.audio_codecs,
     })
 }
 
@@ -61,6 +90,8 @@ pub async fn get_twitch_info(url: String) -> Result<TwitchVideoInfo, String> {
 
     let is_live = json["is_live"].as_bool().unwrap_or(false);
     let audio_tracks = crate::functions::youtube::parse_audio_langs(&json);
+    let video_codecs = crate::functions::youtube::parse_video_codecs(&json);
+    let audio_codecs = crate::functions::youtube::parse_audio_codecs(&json);
 
     Ok(TwitchVideoInfo {
         title: json["title"].as_str().unwrap_or("Twitch VOD").into(),
@@ -79,5 +110,7 @@ pub async fn get_twitch_info(url: String) -> Result<TwitchVideoInfo, String> {
         thumbnail_url: json["thumbnail"].as_str().map(String::from),
         view_count: json["view_count"].as_u64(),
         audio_tracks,
+        video_codecs,
+        audio_codecs,
     })
 }

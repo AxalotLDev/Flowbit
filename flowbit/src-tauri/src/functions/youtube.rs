@@ -18,6 +18,17 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 /// Создаёт tokio-команду, на Windows скрывая консольное окно.
 /// kill_on_drop гарантирует, что процесс будет убит, если его future
 /// уронят (используется для мгновенной отмены).
+/// Декодирует вывод yt-dlp/ffmpeg в строку. Обычно это UTF-8, но на Windows
+/// yt-dlp пишет stdout/stderr в системной ANSI-кодировке (для русской локали —
+/// cp1251/windows-1251), и кириллица бьётся в «ромбики» (U+FFFD) при чтении как
+/// UTF-8. Пробуем UTF-8, при ошибке — windows-1251.
+pub fn decode_output(bytes: &[u8]) -> String {
+    match std::str::from_utf8(bytes) {
+        Ok(s) => s.to_string(),
+        Err(_) => encoding_rs::WINDOWS_1251.decode(bytes).0.into_owned(),
+    }
+}
+
 pub fn new_command(program: &str) -> Command {
     let mut cmd = Command::new(program);
     cmd.kill_on_drop(true);
@@ -60,9 +71,23 @@ fn kill_group(pid: Option<u32>) {
 static CANCEL: Lazy<Notify> = Lazy::new(Notify::new);
 static CANCEL_REQUESTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-/// Сбрасывает флаг отмены в начале новой загрузки.
-pub fn begin_download() {
-    CANCEL_REQUESTED.store(false, std::sync::atomic::Ordering::SeqCst);
+/// Ограничивает «жизнь» флага отмены рамками одной загрузки. Сбрасывает флаг
+/// и при входе в загрузку, и при выходе из неё (любым путём — успех, ошибка,
+/// отмена). Без сброса на выходе отменённая загрузка оставляла бы
+/// CANCEL_REQUESTED = true, и последующие запросы метаданных (get_info →
+/// fetch_duration_and_tracks → run_ytdlp_output) мгновенно падали бы с CANCEL_MSG,
+/// из-за чего у следующего видео длительность не определялась (00:00:00).
+pub struct DownloadGuard;
+impl DownloadGuard {
+    pub fn new() -> Self {
+        CANCEL_REQUESTED.store(false, std::sync::atomic::Ordering::SeqCst);
+        Self
+    }
+}
+impl Drop for DownloadGuard {
+    fn drop(&mut self) {
+        CANCEL_REQUESTED.store(false, std::sync::atomic::Ordering::SeqCst);
+    }
 }
 
 fn is_cancelled() -> bool {
@@ -130,6 +155,8 @@ pub fn network_args() -> Vec<String> {
         "--continue",
         "--progress",
         "--newline",
+        "--compat-options",
+        "filename-sanitization",
         // Не показывать предупреждение "версия старше 90 дней" на каждой загрузке;
         // за актуальностью следит фоновая проверка обновлений при старте.
         "--no-update",
@@ -208,36 +235,26 @@ pub enum DownloadMode {
     Audio,
 }
 
-fn sanitize_filename(name: &str) -> String {
-    let mut out = String::with_capacity(name.len());
-    for c in name.chars() {
-        match c {
-            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' | '\0' => out.push('_'),
-            _ => out.push(c),
-        }
-    }
-    let s = out.trim();
-    if s.is_empty() {
-        return "video".into();
-    }
-    // Обрезаем по символам, а не по байтам: срез s[..200] паникует, если 200
-    // попадает в середину многобайтового UTF-8 символа (кириллица и т.п.).
-    if s.chars().count() > 200 {
-        s.chars().take(200).collect()
-    } else {
-        s.to_string()
-    }
-}
-
 #[inline]
 pub fn quality_to_format(q: Quality) -> &'static str {
-    // Формат в стиле fish-функции ytdl: bv*+ba/b с запасным вариантом b.
+    // Приоритет — универсально играбельные кодеки H.264 (avc1) + AAC (mp4a) в mp4:
+    // их понимает любой плеер, включая VLC. YouTube по умолчанию отдаёт VP9/AV1 +
+    // Opus, из-за чего VLC пишет «кодек не найден». VP9/AV1 берём только запасным
+    // вариантом (например, для 4K, где H.264 нет).
     match q {
-        Quality::Best => "bv*+ba/b",
-        Quality::High => "bv*[height<=1080]+ba/b[height<=1080]/b",
-        Quality::Medium => "bv*[height<=720]+ba/b[height<=720]/b",
-        Quality::Low => "bv*[height<=480]+ba/b[height<=480]/b",
-        Quality::Worst => "wv*+wa/w",
+        Quality::Best => {
+            "bv*[vcodec^=avc1]+ba[acodec^=mp4a]/bv*[ext=mp4]+ba[ext=m4a]/bv*+ba/b"
+        }
+        Quality::High => {
+            "bv*[height<=1080][vcodec^=avc1]+ba[acodec^=mp4a]/bv*[height<=1080][ext=mp4]+ba[ext=m4a]/bv*[height<=1080]+ba/b[height<=1080]/b"
+        }
+        Quality::Medium => {
+            "bv*[height<=720][vcodec^=avc1]+ba[acodec^=mp4a]/bv*[height<=720][ext=mp4]+ba[ext=m4a]/bv*[height<=720]+ba/b[height<=720]/b"
+        }
+        Quality::Low => {
+            "bv*[height<=480][vcodec^=avc1]+ba[acodec^=mp4a]/bv*[height<=480][ext=mp4]+ba[ext=m4a]/bv*[height<=480]+ba/b[height<=480]/b"
+        }
+        Quality::Worst => "wv*[vcodec^=avc1]+wa[acodec^=mp4a]/wv*+wa/w",
     }
 }
 
@@ -246,33 +263,197 @@ pub fn quality_to_format(q: Quality) -> &'static str {
 /// чтобы видео осталось в максимальном качестве (до 4K), а аудио — на всех языках.
 const YT_MULTI_AUDIO_CLIENT: &str = "youtube:player_client=default,web_embedded";
 
-/// Формат видео с учётом выбранной аудиодорожки (языка). Если язык задан —
-/// предпочитаем аудио на этом языке, с откатом на обычный выбор.
-fn video_format_with_lang(q: Quality, audio_lang: Option<&str>) -> String {
-    let base = quality_to_format(q);
-    match audio_lang {
-        Some(l) if !l.is_empty() => {
-            // Селектор видео под выбранное качество. Аудио берём строго на нужном
-            // языке (ba[language=..], без разрешения), с полным fallback дальше.
-            let vsel = match q {
-                Quality::Best => "bv*",
-                Quality::High => "bv*[height<=1080]",
-                Quality::Medium => "bv*[height<=720]",
-                Quality::Low => "bv*[height<=480]",
-                Quality::Worst => "wv*",
-            };
-            format!("{vsel}+ba[language={l}]/{base}")
-        }
-        _ => base.to_string(),
+/// Читает путь, записанный yt-dlp через `--print-to-file`. Обычно UTF-8, но на
+/// всякий случай декодируем устойчиво (UTF-8 → cp1251), а не строгим read_to_string.
+pub async fn read_printed_path(path_file: &Path) -> Option<String> {
+    let bytes = tokio::fs::read(path_file).await.ok()?;
+    let content = decode_output(&bytes);
+    content
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .last()
+        .map(String::from)
+}
+
+/// Путь для обрезанного файла: `<stem>_cut.<ext>` рядом с исходным.
+fn clipped_path(file: &Path) -> PathBuf {
+    let stem = file.file_stem().unwrap_or_default().to_string_lossy();
+    let ext = file.extension().unwrap_or_default().to_string_lossy();
+    file.with_file_name(format!("{stem}_cut.{ext}"))
+}
+
+/// yt-dlp-фильтр по кодеку видео для нашего короткого имени. VP9 на YouTube
+/// встречается и как `vp9`, и как `vp09.*` — покрываем оба регуляркой (~=).
+fn vcodec_filter(codec: Option<&str>) -> Option<&'static str> {
+    match codec {
+        Some("h264") => Some("[vcodec^=avc1]"),
+        Some("vp9") => Some("[vcodec~='^vp0?9']"),
+        Some("av1") => Some("[vcodec^=av01]"),
+        _ => None,
     }
 }
 
-/// Формат для аудио-режима с учётом языка дорожки.
-fn audio_format_with_lang(audio_lang: Option<&str>) -> String {
-    match audio_lang {
-        Some(l) if !l.is_empty() => format!("bestaudio[language={l}]/bestaudio"),
-        _ => "bestaudio".to_string(),
+/// yt-dlp-фильтр по кодеку аудио для нашего короткого имени.
+fn acodec_filter(codec: Option<&str>) -> Option<&'static str> {
+    match codec {
+        Some("aac") => Some("[acodec^=mp4a]"),
+        Some("opus") => Some("[acodec^=opus]"),
+        _ => None,
     }
+}
+
+/// Контейнер (--merge-output-format) под выбор аудио. Opus официально не
+/// поддерживается в mp4 — кладём в mkv (играет везде), иначе mp4.
+pub fn merge_container(audio_codec: Option<&str>) -> &'static str {
+    if audio_codec == Some("opus") {
+        "mkv"
+    } else {
+        "mp4"
+    }
+}
+
+/// Полный селектор формата для видео-режима: качество + кодек видео + кодек
+/// аудио + язык дорожки. Строит список предпочтений от точного совпадения к
+/// всё более общему (через `/`), чтобы загрузка не падала, когда точной
+/// комбинации нет. Для «авто» (кодек не задан) предпочитаем совместимые
+/// H.264 + AAC — их понимает любой плеер, включая VLC.
+fn build_video_format(
+    q: Quality,
+    video_codec: Option<&str>,
+    audio_codec: Option<&str>,
+    audio_lang: Option<&str>,
+) -> String {
+    let (vbase, abase, cap) = match q {
+        Quality::Best => ("bv*", "ba", ""),
+        Quality::High => ("bv*", "ba", "[height<=1080]"),
+        Quality::Medium => ("bv*", "ba", "[height<=720]"),
+        Quality::Low => ("bv*", "ba", "[height<=480]"),
+        Quality::Worst => ("wv*", "wa", ""),
+    };
+    let lang = audio_lang.filter(|l| !l.is_empty());
+    let langf = lang.map(|l| format!("[language={l}]")).unwrap_or_default();
+
+    // Для «авто» — совместимые кодеки; при явном выборе — заданный.
+    let vf = vcodec_filter(video_codec).unwrap_or("[vcodec^=avc1]");
+    let af = acodec_filter(audio_codec).unwrap_or("[acodec^=mp4a]");
+    let a_explicit = acodec_filter(audio_codec).is_some();
+
+    let v = |extra: &str| format!("{vbase}{cap}{extra}");
+    let a = |extra: &str| format!("{abase}{langf}{extra}");
+
+    let mut prefs: Vec<String> = Vec::new();
+    // 1. точная комбинация (для авто — H.264 + AAC)
+    prefs.push(format!("{}+{}", v(vf), a(af)));
+    // 2. выбранный видеокодек + любое аудио (на нужном языке)
+    prefs.push(format!("{}+{}", v(vf), a("")));
+    // 3. если аудиокодек задан явно — любой видеокодек + нужное аудио
+    if a_explicit {
+        prefs.push(format!("{}+{}", v(""), a(af)));
+    }
+    // 4. любой видеокодек + любое аудио (на нужном языке)
+    prefs.push(format!("{}+{}", v(""), a("")));
+    // 5. если был язык — те же варианты без языка (дорожки может не быть)
+    if lang.is_some() {
+        prefs.push(format!("{}+{}", v(vf), abase));
+        prefs.push(format!("{}+{}", v(""), abase));
+    }
+    // 6. финальный общий fallback
+    prefs.push(format!("b{cap}"));
+    prefs.push("b".into());
+
+    prefs.dedup();
+    prefs.join("/")
+}
+
+/// Селектор формата для режима «только аудио»: выбор исходной дорожки по языку
+/// и кодеку (выходной контейнер задаётся отдельно через --audio-format).
+fn build_audio_format(audio_codec: Option<&str>, audio_lang: Option<&str>) -> String {
+    let lang = audio_lang.filter(|l| !l.is_empty());
+    let langf = lang.map(|l| format!("[language={l}]")).unwrap_or_default();
+    let af = acodec_filter(audio_codec);
+
+    let mut prefs: Vec<String> = Vec::new();
+    if let Some(f) = af {
+        prefs.push(format!("ba{langf}{f}"));
+    }
+    prefs.push(format!("ba{langf}"));
+    if lang.is_some() {
+        if let Some(f) = af {
+            prefs.push(format!("ba{f}"));
+        }
+    }
+    prefs.push("ba".into());
+
+    prefs.dedup();
+    prefs.join("/")
+}
+
+/// Порядок отображения кодеков — фиксированный, чтобы UI был стабилен.
+const VCODEC_ORDER: [&str; 3] = ["h264", "vp9", "av1"];
+const ACODEC_ORDER: [&str; 2] = ["aac", "opus"];
+
+fn canon_vcodec(vcodec: &str) -> Option<&'static str> {
+    if vcodec.starts_with("avc1") || vcodec.starts_with("avc3") || vcodec.starts_with("h264") {
+        Some("h264")
+    } else if vcodec.starts_with("vp9") || vcodec.starts_with("vp09") {
+        Some("vp9")
+    } else if vcodec.starts_with("av01") {
+        Some("av1")
+    } else {
+        None
+    }
+}
+
+fn canon_acodec(acodec: &str) -> Option<&'static str> {
+    if acodec.starts_with("mp4a") || acodec.starts_with("aac") {
+        Some("aac")
+    } else if acodec.starts_with("opus") {
+        Some("opus")
+    } else {
+        None
+    }
+}
+
+/// Доступные кодеки видео в ролике (наши короткие имена, в фиксированном порядке).
+pub fn parse_video_codecs(json: &serde_json::Value) -> Vec<String> {
+    let mut found = std::collections::HashSet::new();
+    if let Some(formats) = json["formats"].as_array() {
+        for f in formats {
+            if let Some(v) = f["vcodec"].as_str() {
+                if v != "none" {
+                    if let Some(c) = canon_vcodec(v) {
+                        found.insert(c);
+                    }
+                }
+            }
+        }
+    }
+    VCODEC_ORDER
+        .iter()
+        .filter(|c| found.contains(**c))
+        .map(|c| c.to_string())
+        .collect()
+}
+
+/// Доступные кодеки аудио в ролике (наши короткие имена, в фиксированном порядке).
+pub fn parse_audio_codecs(json: &serde_json::Value) -> Vec<String> {
+    let mut found = std::collections::HashSet::new();
+    if let Some(formats) = json["formats"].as_array() {
+        for f in formats {
+            let is_audio = f["acodec"].as_str().is_some_and(|a| a != "none");
+            if is_audio {
+                if let Some(a) = f["acodec"].as_str().and_then(canon_acodec) {
+                    found.insert(a);
+                }
+            }
+        }
+    }
+    ACODEC_ORDER
+        .iter()
+        .filter(|c| found.contains(**c))
+        .map(|c| c.to_string())
+        .collect()
 }
 
 /// Извлекает коды языков аудиодорожек из JSON yt-dlp (уникальные, по порядку).
@@ -298,36 +479,67 @@ pub fn parse_audio_langs(json: &serde_json::Value) -> Vec<String> {
 /// Один -J запрос (клиент web_embedded) → длительность и языки аудиодорожек.
 /// Мультиязычные дубляжи YouTube видны только через web_embedded. Так и карточка,
 /// и блок выбора дорожки появляются сразу вместе (без второго запроса).
-pub async fn fetch_duration_and_tracks(url: &str) -> (Option<u64>, Vec<String>) {
-    let args = vec![
-        "-J".into(),
-        "--no-playlist".into(),
-        "--extractor-args".into(),
-        YT_MULTI_AUDIO_CLIENT.into(),
-        url.to_string(),
-    ];
-    let Ok(output) = run_ytdlp_output(args, "Failed to fetch info".to_string(), None).await else {
-        return (None, Vec::new());
-    };
-    if !output.status.success() {
-        return (None, Vec::new());
-    }
-    let Ok(json) = serde_json::from_slice::<serde_json::Value>(&output.stdout) else {
-        return (None, Vec::new());
-    };
-    let duration = json["duration"].as_f64().map(|d| d as u64);
-    (duration, parse_audio_langs(&json))
+/// Метаданные видео из одного вызова `yt-dlp -J`. Используются как запасной
+/// источник, когда oembed недоступен (401/404 у видео с запретом встраивания,
+/// возрастным/региональным ограничением).
+#[derive(Default)]
+pub struct YtMeta {
+    pub duration: Option<u64>,
+    pub audio_tracks: Vec<String>,
+    pub video_codecs: Vec<String>,
+    pub audio_codecs: Vec<String>,
+    pub title: Option<String>,
+    pub author: Option<String>,
+    pub thumbnail: Option<String>,
 }
 
-async fn fetch_title(url: &str) -> Result<String, String> {
-    let args: Vec<String> = vec![
-        "--print".into(),
-        "title".into(),
-        "--no-playlist".into(),
-        url.into(),
-    ];
-    let output = run_ytdlp_output(args, "Failed to fetch title:".to_string(), None).await?;
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+/// Один вызов `yt-dlp -J`. `multi_audio` включает web_embedded-клиент, который
+/// раскрывает мультиязычные дубляжи, но иногда отдаёт неполный ответ (без
+/// duration/формата) — поэтому есть откат на дефолтный клиент.
+async fn run_meta_json(url: &str, multi_audio: bool) -> Option<serde_json::Value> {
+    let mut args = vec!["-J".to_string(), "--no-playlist".to_string()];
+    if multi_audio {
+        args.push("--extractor-args".into());
+        args.push(YT_MULTI_AUDIO_CLIENT.into());
+    }
+    args.push(url.to_string());
+    let output = run_ytdlp_output(args, "Failed to fetch info".to_string(), None)
+        .await
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    serde_json::from_str::<serde_json::Value>(&decode_output(&output.stdout)).ok()
+}
+
+pub async fn fetch_yt_meta(url: &str) -> YtMeta {
+    // web_embedded нужен для дубляжей, но флакает: под нагрузкой (например, сразу
+    // после скачивания) может вернуть ответ без duration. Тогда откатываемся на
+    // дефолтный клиент, а длительность в крайнем случае добираем лёгким --print.
+    let json = match run_meta_json(url, true).await {
+        Some(j) => Some(j),
+        None => run_meta_json(url, false).await,
+    };
+    let Some(json) = json else {
+        return YtMeta {
+            duration: fetch_duration(url).await,
+            ..Default::default()
+        };
+    };
+    let s = |k: &str| json[k].as_str().filter(|v| !v.is_empty()).map(String::from);
+    let mut duration = json["duration"].as_f64().map(|d| d as u64);
+    if duration.is_none() {
+        duration = fetch_duration(url).await;
+    }
+    YtMeta {
+        duration,
+        audio_tracks: parse_audio_langs(&json),
+        video_codecs: parse_video_codecs(&json),
+        audio_codecs: parse_audio_codecs(&json),
+        title: s("title").or_else(|| s("fulltitle")),
+        author: s("uploader").or_else(|| s("channel")).or_else(|| s("uploader_id")),
+        thumbnail: s("thumbnail"),
+    }
 }
 
 fn parse_time_to_secs(t: &str) -> Option<u64> {
@@ -410,6 +622,21 @@ fn emit_log(app: &Option<AppHandle>, line: &str) {
     }
 }
 
+/// Читает вывод построчно по байтам и декодирует каждую строку через
+/// decode_output. В отличие от tokio `.lines()` (только UTF-8, обрывается на
+/// первой не-UTF-8 строке), это не теряет логи и корректно показывает кириллицу
+/// из cp1251-вывода yt-dlp на Windows.
+async fn stream_lines(reader: impl tokio::io::AsyncRead + Unpin, app: Option<AppHandle>) {
+    let mut segments = BufReader::new(reader).split(b'\n');
+    while let Ok(Some(seg)) = segments.next_segment().await {
+        let mut line = decode_output(&seg);
+        if line.ends_with('\r') {
+            line.pop();
+        }
+        emit_log(&app, &line);
+    }
+}
+
 /// Запускает yt-dlp, стримит stdout и stderr как события "ytdlp-log",
 /// возвращает ExitStatus.
 pub async fn run_ytdlp_status(
@@ -439,19 +666,13 @@ pub async fn run_ytdlp_status(
 
     let h_out = tokio::spawn(async move {
         if let Some(s) = stdout {
-            let mut lines = BufReader::new(s).lines();
-            while let Ok(Some(line)) = lines.next_line().await {
-                emit_log(&app_out, &line);
-            }
+            stream_lines(s, app_out).await;
         }
     });
 
     let h_err = tokio::spawn(async move {
         if let Some(s) = stderr {
-            let mut lines = BufReader::new(s).lines();
-            while let Ok(Some(line)) = lines.next_line().await {
-                emit_log(&app_err, &line);
-            }
+            stream_lines(s, app_err).await;
         }
     });
 
@@ -489,10 +710,7 @@ pub async fn run_ytdlp_output(
 
     let h_err = tokio::spawn(async move {
         if let Some(s) = stderr {
-            let mut lines = BufReader::new(s).lines();
-            while let Ok(Some(line)) = lines.next_line().await {
-                emit_log(&app_err, &line);
-            }
+            stream_lines(s, app_err).await;
         }
     });
 
@@ -526,8 +744,10 @@ pub async fn download_video(
     end: Option<String>,
     duration: Option<u64>,
     audio_lang: Option<String>,
+    video_codec: Option<String>,
+    audio_codec: Option<String>,
 ) -> Result<DownloadResult, String> {
-    begin_download();
+    let _guard = DownloadGuard::new();
     let out_dir = resolve_out_dir(&app, path);
     let app = Some(app);
 
@@ -536,12 +756,11 @@ pub async fn download_video(
         .map_err(|e| format!("Cannot create directory: {e}"))?;
 
     if matches!(mode, Some(DownloadMode::Audio)) {
-        return download_audio(&url, &out_dir, start, end, duration, audio_lang, app).await;
+        return download_audio(
+            &url, &out_dir, start, end, duration, audio_lang, audio_codec, app,
+        )
+        .await;
     }
-
-    let title = fetch_title(&url).await?;
-    let filename = sanitize_filename(&title);
-    let out_file = out_dir.join(format!("{filename}.mp4"));
 
     let start_str = start.as_deref().unwrap_or("00:00:00").to_string();
 
@@ -565,20 +784,29 @@ pub async fn download_video(
 
     let need_section = section_changed(&start_str, &end_str, resolved_duration);
 
-    let format = video_format_with_lang(quality.unwrap_or(Quality::Best), audio_lang.as_deref());
-    // ВАЖНО: -o должен быть ОТНОСИТЕЛЬНЫМ. При абсолютном пути yt-dlp игнорирует
-    // все --paths (и home, и temp) с предупреждением. Каталоги задаём через -P.
-    let out_tmpl = format!("{filename}.%(ext)s");
+    let format = build_video_format(
+        quality.unwrap_or(Quality::Best),
+        video_codec.as_deref().filter(|c| !c.is_empty()),
+        audio_codec.as_deref().filter(|c| !c.is_empty()),
+        audio_lang.as_deref(),
+    );
+    let container = merge_container(audio_codec.as_deref().filter(|c| !c.is_empty()));
 
     // Отдельный каталог для промежуточных файлов (-P temp:), как в fish-функции.
     let tmp_dir = out_dir.join(".flowbit-tmp");
     let _ = tokio::fs::create_dir_all(&tmp_dir).await;
+    // yt-dlp пишет сюда реальный путь в UTF-8. Имя файла НЕ строим сами из title:
+    // на Windows stdout yt-dlp бывает в cp1251, и кириллица бьётся в «ромбики».
+    // %(title)s даёт yt-dlp писать файл с корректным Unicode-именем, а путь
+    // читаем из файла (--print-to-file всегда UTF-8), а не из stdout.
+    let path_file = tmp_dir.join("__filepath.txt");
+    let _ = tokio::fs::remove_file(&path_file).await;
 
     let mut args: Vec<String> = vec![
         "-f".into(),
-        format.into(),
+        format,
         "--merge-output-format".into(),
-        "mp4".into(),
+        container.into(),
         "--no-playlist".into(),
         "-P".into(),
         format!("home:{}", out_dir.to_string_lossy()),
@@ -592,10 +820,16 @@ pub async fn download_video(
     }
     args.extend(network_args());
     args.push("-o".into());
-    args.push(out_tmpl);
+    args.push("%(title)s.%(ext)s".into());
+    args.push("--print-to-file".into());
+    args.push("after_move:filepath".into());
+    args.push(path_file.to_string_lossy().into_owned());
     args.push(url.clone());
 
     let status = run_ytdlp_status(args, "Failed to run yt-dlp".to_string(), app.clone()).await?;
+
+    // Читаем путь ДО удаления tmp_dir.
+    let real_path = read_printed_path(&path_file).await;
 
     cleanup_temp(&out_dir).await;
     let _ = tokio::fs::remove_dir_all(&tmp_dir).await;
@@ -604,14 +838,15 @@ pub async fn download_video(
         return Err("Video download failed".into());
     }
 
+    let out_file = PathBuf::from(real_path.ok_or("Cannot resolve output file path")?);
+
     if need_section {
-        let temp_input = out_file.clone();
-        let clipped_file = out_dir.join(format!("{filename}_cut.mp4"));
+        let clipped_file = clipped_path(&out_file);
 
         let ffmpeg_args = vec![
             "-y".into(),
             "-i".into(),
-            temp_input.to_string_lossy().into_owned(),
+            out_file.to_string_lossy().into_owned(),
             "-ss".into(),
             start_str.clone(),
             "-to".into(),
@@ -631,7 +866,7 @@ pub async fn download_video(
             return Err("ffmpeg trimming failed".into());
         }
 
-        let _ = tokio::fs::remove_file(&temp_input).await;
+        let _ = tokio::fs::remove_file(&out_file).await;
         let _ = tokio::fs::rename(&clipped_file, &out_file).await;
     }
 
@@ -656,14 +891,9 @@ async fn download_audio(
     end: Option<String>,
     duration: Option<u64>,
     audio_lang: Option<String>,
+    audio_codec: Option<String>,
     app: Option<AppHandle>,
 ) -> Result<DownloadResult, String> {
-    let title = fetch_title(url).await?;
-    let filename = sanitize_filename(&title);
-
-    // Относительный -o + каталоги через -P (см. пояснение в download_video).
-    let out_tmpl = format!("{filename}.%(ext)s");
-
     let start_str = start.as_deref().unwrap_or("00:00:00").to_string();
 
     let resolved_duration = match duration {
@@ -688,13 +918,24 @@ async fn download_audio(
 
     let tmp_dir = out_dir.join(".flowbit-tmp");
     let _ = tokio::fs::create_dir_all(&tmp_dir).await;
+    // Имя файла отдаём yt-dlp (%(title)s), путь читаем из UTF-8 файла — см. download_video.
+    let path_file = tmp_dir.join("__filepath.txt");
+    let _ = tokio::fs::remove_file(&path_file).await;
 
+    let ac = audio_codec.as_deref().filter(|c| !c.is_empty());
+    // Выходной формат аудио: opus/aac сохраняем как есть (без потерь на
+    // перекодировании), для «авто» — mp3 (играет везде).
+    let out_audio_format = match ac {
+        Some("opus") => "opus",
+        Some("aac") => "m4a",
+        _ => "mp3",
+    };
     let mut args: Vec<String> = vec![
         "-f".into(),
-        audio_format_with_lang(audio_lang.as_deref()),
+        build_audio_format(ac, audio_lang.as_deref()),
         "-x".into(),
         "--audio-format".into(),
-        "mp3".into(),
+        out_audio_format.into(),
         "--audio-quality".into(),
         "0".into(),
         "--no-playlist".into(),
@@ -709,12 +950,15 @@ async fn download_audio(
     }
     args.extend(network_args());
     args.push("-o".into());
-    args.push(out_tmpl);
-    args.push("--print".into());
+    args.push("%(title)s.%(ext)s".into());
+    args.push("--print-to-file".into());
     args.push("after_move:filepath".into());
+    args.push(path_file.to_string_lossy().into_owned());
     args.push(url.to_string());
 
     let output = run_ytdlp_output(args, "yt-dlp error:".to_string(), app.clone()).await?;
+
+    let real_path = read_printed_path(&path_file).await;
 
     cleanup_temp(out_dir).await;
     let _ = tokio::fs::remove_dir_all(&tmp_dir).await;
@@ -723,27 +967,15 @@ async fn download_audio(
         return Err("Audio download failed".into());
     }
 
-    let real_path = String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .last()
-        .unwrap_or("")
-        .trim()
-        .to_string();
-
-    if real_path.is_empty() {
-        return Err("Cannot resolve output file path from yt-dlp".into());
-    }
-
-    let out_file = PathBuf::from(&real_path);
+    let out_file = PathBuf::from(real_path.ok_or("Cannot resolve output file path from yt-dlp")?);
 
     if need_section {
-        let temp_input = out_file.clone();
-        let clipped_file = out_dir.join(format!("{filename}_cut.mp3"));
+        let clipped_file = clipped_path(&out_file);
 
         let ffmpeg_args = vec![
             "-y".into(),
             "-i".into(),
-            temp_input.to_string_lossy().into_owned(),
+            out_file.to_string_lossy().into_owned(),
             "-ss".into(),
             start_str.clone(),
             "-to".into(),
@@ -763,7 +995,7 @@ async fn download_audio(
             return Err("ffmpeg trimming failed".into());
         }
 
-        let _ = tokio::fs::remove_file(&temp_input).await;
+        let _ = tokio::fs::remove_file(&out_file).await;
         let _ = tokio::fs::rename(&clipped_file, &out_file).await;
     }
 
@@ -779,4 +1011,23 @@ async fn download_audio(
         path: out_file.to_string_lossy().into(),
         file_size_mb: file_mb(meta.len()),
     })
+}
+
+#[cfg(test)]
+mod decode_tests {
+    use super::decode_output;
+    #[test]
+    fn utf8_passthrough() {
+        assert_eq!(decode_output("Привет.mp4".as_bytes()), "Привет.mp4");
+    }
+    #[test]
+    fn cp1251_fallback() {
+        // "Привет" в cp1251
+        let cp1251 = [0xCF, 0xF0, 0xE8, 0xE2, 0xE5, 0xF2];
+        assert_eq!(decode_output(&cp1251), "Привет");
+    }
+    #[test]
+    fn ascii_ok() {
+        assert_eq!(decode_output(b"[download] 50%"), "[download] 50%");
+    }
 }

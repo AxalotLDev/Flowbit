@@ -139,6 +139,92 @@ pub async fn download_quickjs(libs_dir: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Версия сборок ffbinaries, откуда берём ffprobe (в этом теге есть ассеты для
+/// всех нужных платформ).
+const FFPROBE_BUILD_VERSION: &str = "6.1";
+
+/// Платформенный слаг ffbinaries для текущей ОС/арх. ffbinaries публикует каждый
+/// бинарник отдельным zip (внутри архива — ровно один файл ffprobe[.exe]), в
+/// отличие от boul2gom/ffmpeg-builds, где в архиве лежит только ffmpeg.
+fn ffprobe_platform() -> &'static str {
+    if cfg!(windows) {
+        "win-64"
+    } else if cfg!(target_os = "macos") {
+        "macos-64"
+    } else if cfg!(target_arch = "aarch64") {
+        "linux-arm-64"
+    } else if cfg!(target_arch = "x86") {
+        "linux-32"
+    } else {
+        "linux-64"
+    }
+}
+
+/// Докачивает ffprobe рядом с ffmpeg. yt-dlp-крейт кладёт только ffmpeg, а yt-dlp
+/// ищет ffprobe в том же каталоге (иначе «WARNING: ffprobe not found»).
+/// Берём отдельный zip с ffprobe из ffbinaries-prebuilt.
+pub async fn download_ffprobe(libs_dir: &Path) -> Result<(), String> {
+    let file_name = if cfg!(windows) { "ffprobe.exe" } else { "ffprobe" };
+    let dest = libs_dir.join(file_name);
+    if dest.exists() {
+        return Ok(());
+    }
+
+    let asset = format!(
+        "ffprobe-{FFPROBE_BUILD_VERSION}-{}.zip",
+        ffprobe_platform()
+    );
+    let url = format!(
+        "https://github.com/ffbinaries/ffbinaries-prebuilt/releases/download/v{FFPROBE_BUILD_VERSION}/{asset}"
+    );
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(60 * 10))
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    let bytes = client
+        .get(&url)
+        .header("User-Agent", "tauri-app")
+        .send()
+        .await
+        .map_err(|e| e.to_string())?
+        .error_for_status()
+        .map_err(|e| e.to_string())?
+        .bytes()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    // Архив плоский — ищем запись, оканчивающуюся на ffprobe(.exe).
+    let mut archive =
+        zip::ZipArchive::new(std::io::Cursor::new(bytes)).map_err(|e| e.to_string())?;
+    let mut found = None;
+    for i in 0..archive.len() {
+        let entry = archive.by_index(i).map_err(|e| e.to_string())?;
+        let base = entry.name().rsplit(['/', '\\']).next().unwrap_or("");
+        if base == file_name {
+            found = Some(i);
+            break;
+        }
+    }
+    let idx = found.ok_or_else(|| format!("{file_name} not found in {asset}"))?;
+
+    let mut entry = archive.by_index(idx).map_err(|e| e.to_string())?;
+    let mut out = fs::File::create(&dest).map_err(|e| e.to_string())?;
+    std::io::copy(&mut entry, &mut out).map_err(|e| e.to_string())?;
+    drop(out);
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(&dest).map_err(|e| e.to_string())?.permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&dest, perms).map_err(|e| e.to_string())?;
+    }
+
+    Ok(())
+}
+
 /// Базовый каталог данных приложения. На Windows — короткий `%APPDATA%\flowbit`
 /// (без reverse-domain идентификатора), на остальных платформах — стандартный
 /// app_data_dir от Tauri (`.../com.axalotl.flowbit`).
@@ -169,5 +255,9 @@ pub async fn install_dependencies(app: &AppHandle) -> Result<(), String> {
         .map_err(|e| e.to_string())?;
 
     download_quickjs(&libs_dir).await?;
+    // ffprobe — best-effort: без него скачивание работает, только с предупреждением.
+    if let Err(e) = download_ffprobe(&libs_dir).await {
+        eprintln!("ffprobe download failed: {e}");
+    }
     Ok(())
 }
