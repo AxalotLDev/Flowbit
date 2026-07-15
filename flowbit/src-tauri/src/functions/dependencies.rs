@@ -1,11 +1,22 @@
 use serde::Deserialize;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::OnceLock;
 use tauri::{AppHandle, Manager};
 use yt_dlp::Downloader;
 
 static LIBS_PATH: OnceLock<String> = OnceLock::new();
+
+/// Готовы ли бинарники (yt-dlp/ffmpeg/…). До готовности фронтенд показывает
+/// экран загрузки, а не «зависшее» пустое окно.
+pub static DEPS_READY: AtomicBool = AtomicBool::new(false);
+
+/// Tauri-команда: проверить, скачаны ли уже библиотеки (для стартового экрана).
+#[tauri::command]
+pub fn deps_ready() -> bool {
+    DEPS_READY.load(Ordering::SeqCst)
+}
 
 pub fn init_libs_dir_path(path: &PathBuf) {
     LIBS_PATH.set(path.to_string_lossy().to_string()).ok();
@@ -247,17 +258,25 @@ pub async fn install_dependencies(app: &AppHandle) -> Result<(), String> {
 
     init_libs_dir_path(&libs_dir);
 
-    Downloader::with_new_binaries(libs_dir.clone(), output_dir)
-        .await
-        .map_err(|e| e.to_string())?
-        .build()
-        .await
-        .map_err(|e| e.to_string())?;
+    // Быстрый путь: если yt-dlp и ffmpeg уже на месте — не перекачиваем их заново
+    // (иначе экран загрузки мигал бы при каждом запуске). Свежесть yt-dlp
+    // обеспечивает фоновый self-update после старта.
+    let yt = libs_dir.join(if cfg!(windows) { "yt-dlp.exe" } else { "yt-dlp" });
+    let ff = libs_dir.join(if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" });
+    if !(yt.exists() && ff.exists()) {
+        Downloader::with_new_binaries(libs_dir.clone(), output_dir)
+            .await
+            .map_err(|e| e.to_string())?
+            .build()
+            .await
+            .map_err(|e| e.to_string())?;
+    }
 
     download_quickjs(&libs_dir).await?;
     // ffprobe — best-effort: без него скачивание работает, только с предупреждением.
     if let Err(e) = download_ffprobe(&libs_dir).await {
         eprintln!("ffprobe download failed: {e}");
     }
+    DEPS_READY.store(true, Ordering::SeqCst);
     Ok(())
 }

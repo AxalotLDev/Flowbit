@@ -9,35 +9,28 @@ use crate::functions::youtube::{
 use functions::twitch::TwitchDownloadState;
 use functions::youtube::DownloadState;
 
-use crate::functions::dependencies::install_dependencies;
+use crate::functions::dependencies::{deps_ready, install_dependencies};
 use crate::functions::playlist::{download_playlist, get_playlist_info, is_playlist_url};
-use tauri::Manager;
+use tauri::Emitter;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
-            let _path = app
-                .path()
-                .app_data_dir()
-                .expect("no app data dir")
-                .join("libs")
-                .join(if cfg!(windows) {
-                    "yt-dlp.exe"
-                } else {
-                    "yt-dlp"
-                });
-
-            tauri::async_runtime::block_on(async {
-                if let Err(e) = install_dependencies(app.handle()).await {
-                    eprintln!("Failed: {}", e);
-                }
-            });
-
-            // Фоновая проверка обновлений yt-dlp — не блокирует запуск окна.
+            // Скачивание бинарников НЕ блокирует появление окна: фронтенд
+            // показывает экран загрузки и ждёт события "deps-ready"/"deps-error".
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
-                match ytdlp_self_update(Some(handle)).await {
+                if let Err(e) = install_dependencies(&handle).await {
+                    eprintln!("Failed to install dependencies: {e}");
+                    let _ = handle.emit("deps-error", e);
+                    return;
+                }
+                let _ = handle.emit("deps-ready", ());
+
+                // Проверку обновлений yt-dlp делаем ПОСЛЕ установки, чтобы не
+                // заменять бинарник во время первичной загрузки/запросов инфо.
+                match ytdlp_self_update(Some(handle.clone())).await {
                     Ok(true) => {}
                     Ok(false) => eprintln!("yt-dlp update check: non-zero exit"),
                     Err(e) => eprintln!("yt-dlp update check failed: {e}"),
@@ -62,6 +55,7 @@ pub fn run() {
             download_playlist,
             update_ytdlp,
             cancel_download,
+            deps_ready,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

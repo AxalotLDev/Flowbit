@@ -28,7 +28,7 @@ pub struct VideoInfo {
 }
 
 #[tauri::command]
-pub async fn get_youtube_info(url: String) -> Result<VideoInfo, String> {
+pub async fn get_youtube_info(app: tauri::AppHandle, url: String) -> Result<VideoInfo, String> {
     let oembed_url = format!("https://www.youtube.com/oembed?url={}&format=json", url);
 
     // oembed (быстрые title/автор/обложка) и один -J (длительность + аудиодорожки
@@ -36,7 +36,7 @@ pub async fn get_youtube_info(url: String) -> Result<VideoInfo, String> {
     // одновременно. Если oembed недоступен (401/404 у видео с запретом встраивания
     // или возрастным ограничением) — берём всё из yt-dlp, а не падаем с ошибкой.
     let (oembed_res, meta) =
-        tokio::join!(client().get(&oembed_url).send(), fetch_yt_meta(&url));
+        tokio::join!(client().get(&oembed_url).send(), fetch_yt_meta(&url, Some(app)));
 
     let oembed_json = match oembed_res {
         Ok(res) if res.status().is_success() => res.json::<serde_json::Value>().await.ok(),

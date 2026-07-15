@@ -239,6 +239,10 @@ export default function App() {
     const [downloadPath, setDownloadPath] = useState<string | null>(null);
     const [logs, setLogs] = useState<{ text: string; kind: "error" | "warning" | "success" | "info" }[]>([]);
 
+    // Готовность бинарников (yt-dlp/ffmpeg). Пока не готово — экран загрузки.
+    const [depsReady, setDepsReady] = useState(false);
+    const [depsError, setDepsError] = useState<string | null>(null);
+
     const abortRef = useRef<AbortController | null>(null);
     const unlistenRef = useRef<(() => void) | null>(null);
 
@@ -254,6 +258,22 @@ export default function App() {
         return () => {
             cancelled = true;
             unlistenRef.current?.();
+        };
+    }, []);
+
+    // Готовность бинарников: сначала слушаем события, затем спрашиваем текущее
+    // состояние (вдруг установка уже завершилась до подписки).
+    useEffect(() => {
+        let cancelled = false;
+        const unlisteners: (() => void)[] = [];
+        listen("deps-ready", () => !cancelled && setDepsReady(true)).then((u) => unlisteners.push(u));
+        listen<string>("deps-error", (e) => !cancelled && setDepsError(e.payload)).then((u) => unlisteners.push(u));
+        invoke<boolean>("deps_ready").then((ready) => {
+            if (!cancelled && ready) setDepsReady(true);
+        });
+        return () => {
+            cancelled = true;
+            unlisteners.forEach((u) => u());
         };
     }, []);
 
@@ -464,6 +484,47 @@ export default function App() {
         if (downloading) return <><span className="spinner"/>Загружается…</>;
         return mode === "audio" ? "Скачать аудио плейлиста" : "Скачать плейлист";
     };
+
+    if (!depsReady) {
+        return (
+            <main className="app deps-screen">
+                <div className="logo">
+                    <div className="logo-icon">
+                        <svg viewBox="0 0 24 24">
+                            <path
+                                d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 14.5v-9l6 4.5-6 4.5z"/>
+                        </svg>
+                    </div>
+                    <span className="logo-name">Flowbit</span>
+                    <span className="logo-tag">beta</span>
+                </div>
+                <div className="deps-loader">
+                    {depsError ? (
+                        <>
+                            <div className="deps-error-icon">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+                                     width="28" height="28">
+                                    <circle cx="12" cy="12" r="10"/>
+                                    <line x1="12" y1="8" x2="12" y2="12"/>
+                                    <line x1="12" y1="16" x2="12.01" y2="16"/>
+                                </svg>
+                            </div>
+                            <p className="deps-title">Не удалось загрузить компоненты</p>
+                            <p className="deps-sub">{depsError}</p>
+                            <p className="deps-sub">Проверьте интернет и перезапустите приложение</p>
+                        </>
+                    ) : (
+                        <>
+                            <div className="deps-spinner"/>
+                            <p className="deps-title">Подготовка к работе…</p>
+                            <p className="deps-sub">Скачиваем yt-dlp и ffmpeg — это нужно только при первом
+                                запуске</p>
+                        </>
+                    )}
+                </div>
+            </main>
+        );
+    }
 
     return (
         <main className="app">

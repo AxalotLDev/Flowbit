@@ -509,20 +509,47 @@ async fn run_meta_json(url: &str, multi_audio: bool) -> Option<serde_json::Value
     if !output.status.success() {
         return None;
     }
-    serde_json::from_str::<serde_json::Value>(&decode_output(&output.stdout)).ok()
+    let json = serde_json::from_str::<serde_json::Value>(&decode_output(&output.stdout)).ok()?;
+    // При неудачной экстракции (в т.ч. капча «not a bot») yt-dlp печатает "null"
+    // и выходит с кодом 0. Это не метаданные — считаем провалом, чтобы сработал
+    // откат на другой клиент, а не тихо получить duration = null (00:00:00).
+    if !json.is_object() {
+        return None;
+    }
+    Some(json)
 }
 
-pub async fn fetch_yt_meta(url: &str) -> YtMeta {
-    // web_embedded нужен для дубляжей, но флакает: под нагрузкой (например, сразу
-    // после скачивания) может вернуть ответ без duration. Тогда откатываемся на
-    // дефолтный клиент, а длительность в крайнем случае добираем лёгким --print.
-    let json = match run_meta_json(url, true).await {
-        Some(j) => Some(j),
-        None => run_meta_json(url, false).await,
-    };
+/// Пытается получить валидный JSON метаданных, устойчиво к капче «not a bot».
+/// Сначала web_embedded (раскрывает дубляжи); если пусто/капча — дефолтный
+/// клиент с несколькими ретраями с задержкой: капча обычно снимается через пару
+/// секунд, поэтому один отказ ещё не значит, что видео недоступно.
+async fn fetch_meta_json_resilient(url: &str) -> Option<serde_json::Value> {
+    if let Some(j) = run_meta_json(url, true).await {
+        return Some(j);
+    }
+    for attempt in 0..3 {
+        if attempt > 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
+        }
+        if let Some(j) = run_meta_json(url, false).await {
+            return Some(j);
+        }
+    }
+    None
+}
+
+pub async fn fetch_yt_meta(url: &str, app: Option<AppHandle>) -> YtMeta {
+    let json = fetch_meta_json_resilient(url).await;
     let Some(json) = json else {
+        let duration = fetch_duration(url).await;
+        if duration.is_none() {
+            emit_log(
+                &app,
+                "[flowbit] Не удалось получить данные видео (возможно, ограничение YouTube «not a bot»). Длительность неизвестна.",
+            );
+        }
         return YtMeta {
-            duration: fetch_duration(url).await,
+            duration,
             ..Default::default()
         };
     };
