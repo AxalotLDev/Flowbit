@@ -17,8 +17,8 @@ use tauri::Emitter;
 pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
-            // Скачивание бинарников НЕ блокирует появление окна: фронтенд
-            // показывает экран загрузки и ждёт события "deps-ready"/"deps-error".
+            // Downloading the binaries does NOT block the window from appearing:
+            // the frontend shows a loading screen and waits for "deps-ready"/"deps-error".
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 if let Err(e) = install_dependencies(&handle).await {
@@ -28,8 +28,8 @@ pub fn run() {
                 }
                 let _ = handle.emit("deps-ready", ());
 
-                // Проверку обновлений yt-dlp делаем ПОСЛЕ установки, чтобы не
-                // заменять бинарник во время первичной загрузки/запросов инфо.
+                // Check for yt-dlp updates AFTER install, so we don't replace the
+                // binary during the initial download / info requests.
                 match ytdlp_self_update(Some(handle.clone())).await {
                     Ok(true) => {}
                     Ok(false) => eprintln!("yt-dlp update check: non-zero exit"),
