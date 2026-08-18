@@ -1,4 +1,4 @@
-mod functions;
+pub mod functions;
 
 use crate::functions::get_info::{get_twitch_info, get_youtube_info};
 use crate::functions::twitch::download_twitch;

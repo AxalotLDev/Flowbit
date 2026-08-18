@@ -23,7 +23,7 @@
       }
     ],
     "security": {
-      "csp": null
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https: http:; connect-src 'self' https: http:; font-src 'self' data:; media-src https: http:; frame-src 'self' https://player.twitch.tv https://*.twitch.tv https://*.twitchcdn.com;"
     }
   },
   "bundle": {
