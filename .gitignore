@@ -1,7 +1,7 @@
-/flowbit/node_modules/
-/flowbit/dist/
-/flowbit/src-tauri/libs/
-/flowbit/libs/ffmpeg
-/flowbit/libs/yt-dlp
-/flowbit/src-tauri/gen/
+/node_modules/
+/dist/
+/src-tauri/libs/
+/libs/ffmpeg
+/libs/yt-dlp
+/src-tauri/gen/
 .idea/inspectionProfiles/Project_Default.xml

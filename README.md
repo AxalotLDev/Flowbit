@@ -45,7 +45,6 @@ the first time it runs.
 ## Getting started
 
 ```bash
-cd flowbit
 bun install
 ```
 
@@ -73,25 +72,14 @@ compiles and packages the Tauri app for the host platform (AppImage/deb on
 Linux, MSI/NSIS on Windows, `.app`/dmg on macOS), per the `bundle` config in
 `src-tauri/tauri.conf.json`.
 
-### Other useful scripts
+### Helper scripts
+
+Thin wrappers around the commands above, plus a few extras:
 
 ```bash
-bun run dev      # Vite dev server only (frontend, no Tauri shell)
-bun run build    # Frontend production build only
-cargo check      # Rust: fast type-check of the backend (run from src-tauri/)
-cargo test       # Rust: run the backend test suite (run from src-tauri/)
-```
-
-## Project layout
-
-```
-flowbit/
-├── src/                  # React frontend (App.tsx is the whole UI)
-├── src-tauri/
-│   ├── src/
-│   │   ├── lib.rs        # Tauri app setup, command registration
-│   │   └── functions/    # Backend logic: youtube.rs, twitch.rs, playlist.rs,
-│   │                      # get_info.rs, dependencies.rs, valid.rs
-│   └── tauri.conf.json   # App window, bundle and CSP configuration
-└── package.json
+./dev.sh              # bun run tauri dev (add --wayland to force the Wayland GTK backend)
+./build.sh             # release bundle; also installs the binary to /usr/local/bin/flowbit
+                        # (--windows cross-builds, --debug, --no-install, --bundles deb,rpm)
+./clean.sh              # remove dist/ and the Rust target/ (--all also drops node_modules)
+./android.sh init|dev|build  # Android build via `tauri android` (needs Android SDK/NDK/JDK)
 ```
