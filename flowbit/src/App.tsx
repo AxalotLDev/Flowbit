@@ -1,5 +1,5 @@
 import "./App.css";
-import {useState, useEffect, useCallback, useRef} from "react";
+import {useState, useEffect, useCallback, useRef, useMemo, memo} from "react";
 import {invoke} from "@tauri-apps/api/core";
 import {openUrl} from "@tauri-apps/plugin-opener";
 import {open} from "@tauri-apps/plugin-dialog";
@@ -162,13 +162,13 @@ function YouTubePreview({videoId, url}: { videoId: string; url: string }) {
     );
 }
 
-function LogPanel({logs, downloading}: {
+const LogPanel = memo(function LogPanel({logs, downloading}: {
     logs: { text: string; kind: "error" | "warning" | "success" | "info" }[];
     downloading: boolean;
 }) {
     const [open, setOpen] = useState(false);
     const logsEndRef = useRef<HTMLDivElement>(null);
-    const errorCount = logs.filter((l) => l.kind === "error").length;
+    const errorCount = useMemo(() => logs.filter((l) => l.kind === "error").length, [logs]);
 
     useEffect(() => {
         if (open) logsEndRef.current?.scrollIntoView({behavior: "smooth"});
@@ -203,7 +203,7 @@ function LogPanel({logs, downloading}: {
             )}
         </div>
     );
-}
+});
 
 export default function App() {
     const [url, setUrl] = useState("");
@@ -248,15 +248,33 @@ export default function App() {
 
     useEffect(() => {
         let cancelled = false;
+        // Во время загрузки события "ytdlp-log" прилетают пачками в реальном
+        // времени; ре-рендер лог-панели на каждое отдельное событие лишний —
+        // копим их в буфере и сбрасываем разом на кадр анимации. На WebView2
+        // (Windows) это особенно заметно: без батчинга под частым потоком
+        // событий панель логов подтормаживает и визуально "спотыкается".
+        let buffer: { text: string; kind: "error" | "warning" | "success" | "info" }[] = [];
+        let rafId = 0;
+
+        const flush = () => {
+            rafId = 0;
+            if (!buffer.length) return;
+            const incoming = buffer;
+            buffer = [];
+            setLogs((prev) => [...prev, ...incoming].slice(-500));
+        };
+
         listen<string>("ytdlp-log", (event) => {
             if (cancelled) return;
-            setLogs((prev) => [...prev.slice(-499), {text: event.payload, kind: classifyLine(event.payload)}]);
+            buffer.push({text: event.payload, kind: classifyLine(event.payload)});
+            if (!rafId) rafId = requestAnimationFrame(flush);
         }).then((unlisten) => {
             if (cancelled) unlisten();
             else unlistenRef.current = unlisten;
         });
         return () => {
             cancelled = true;
+            if (rafId) cancelAnimationFrame(rafId);
             unlistenRef.current?.();
         };
     }, []);

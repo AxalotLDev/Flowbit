@@ -1,5 +1,6 @@
 use crate::functions::dependencies::{ffmpeg, quickjs, yt_dlp};
 use once_cell::sync::Lazy;
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use tauri::{AppHandle, Emitter, Manager};
@@ -27,6 +28,18 @@ pub fn decode_output(bytes: &[u8]) -> String {
         Ok(s) => s.to_string(),
         Err(_) => encoding_rs::WINDOWS_1251.decode(bytes).0.into_owned(),
     }
+}
+
+/// yt-dlp может решить, что вывод — терминал, поддерживающий ANSI-цвета (это
+/// зависит от платформенной эвристики и ненадёжно, когда процесс запущен без
+/// консоли, как на Windows с CREATE_NO_WINDOW). На этот случай подчищаем
+/// управляющие последовательности из уже задекодированной строки, чтобы в
+/// панели логов не оставалось "мусора" вида `\x1b[0;33m`.
+static ANSI_RE: std::sync::LazyLock<Regex> =
+    std::sync::LazyLock::new(|| Regex::new(r"\x1b\[[0-9;]*[a-zA-Z]").unwrap());
+
+fn strip_ansi(s: &str) -> std::borrow::Cow<'_, str> {
+    ANSI_RE.replace_all(s, "")
 }
 
 pub fn new_command(program: &str) -> Command {
@@ -652,11 +665,28 @@ async fn stream_lines(reader: impl tokio::io::AsyncRead + Unpin, app: Option<App
     let mut segments = BufReader::new(reader).split(b'\n');
     while let Ok(Some(seg)) = segments.next_segment().await {
         let mut line = decode_output(&seg);
-        if line.ends_with('\r') {
-            line.pop();
+        line.retain(|c| c != '\r');
+        if line.contains('\x1b') {
+            line = strip_ansi(&line).into_owned();
         }
         emit_log(&app, &line);
     }
+}
+
+/// Общие флаги для каждого запуска yt-dlp: расположение ffmpeg, JS-рантайм
+/// для чтения n-sig и `--color never` — платформенное определение поддержки
+/// ANSI-цвета ненадёжно, когда процесс запущен без консоли (Windows,
+/// CREATE_NO_WINDOW), и без явного отключения в панель логов иногда попадают
+/// сырые управляющие последовательности.
+fn default_ytdlp_args() -> Vec<String> {
+    vec![
+        "--ffmpeg-location".into(),
+        ffmpeg().into(),
+        "--js-runtimes".into(),
+        format!("quickjs:{}", quickjs()),
+        "--color".into(),
+        "never".into(),
+    ]
 }
 
 pub async fn run_ytdlp_status(
@@ -664,12 +694,7 @@ pub async fn run_ytdlp_status(
     error_format: String,
     app: Option<AppHandle>,
 ) -> Result<std::process::ExitStatus, String> {
-    let default_args: Vec<String> = vec![
-        "--ffmpeg-location".into(),
-        ffmpeg().into(),
-        "--js-runtimes".into(),
-        format!("quickjs:{}", quickjs()),
-    ];
+    let default_args = default_ytdlp_args();
 
     let mut child = new_command(&yt_dlp())
         .args(default_args.iter().chain(args.iter()))
@@ -709,12 +734,7 @@ pub async fn run_ytdlp_output(
     error_format: String,
     app: Option<AppHandle>,
 ) -> Result<std::process::Output, String> {
-    let default_args: Vec<String> = vec![
-        "--ffmpeg-location".into(),
-        ffmpeg().into(),
-        "--js-runtimes".into(),
-        format!("quickjs:{}", quickjs()),
-    ];
+    let default_args = default_ytdlp_args();
 
     let mut child = new_command(&yt_dlp())
         .args(default_args.iter().chain(args.iter()))
