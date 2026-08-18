@@ -102,9 +102,9 @@ pub async fn download_twitch(
     end: Option<String>,
     duration: Option<u64>,
     audio_lang: Option<String>,
-    // Twitch-VOD всегда H.264/AAC — выбор кодека здесь ни на что не влияет,
-    // принимаем параметры лишь ради единого фронтенд-API. Кодек аудио задаёт
-    // только контейнер (на случай, если когда-нибудь появится opus).
+    // Twitch VODs are always H.264/AAC — the codec choice here has no effect,
+    // just accepted for a uniform frontend API. Audio codec only sets the
+    // container (in case opus shows up someday).
     video_codec: Option<String>,
     audio_codec: Option<String>,
 ) -> Result<DownloadResult, String> {
@@ -117,8 +117,8 @@ pub async fn download_twitch(
         .await
         .map_err(|e| e.to_string())?;
 
-    // Валидируем URL (ошибка пробросится). Имя файла отдаём yt-dlp через
-    // %(title)s — сами из title не строим, иначе кириллица бьётся (cp1251 stdout).
+    // Validate the URL (error propagates). Filename comes from yt-dlp via
+    // %(title)s — never build it from title ourselves, or Cyrillic breaks (cp1251 stdout).
     let _ = get_twitch_info(url.clone()).await?;
     let is_audio = matches!(mode, Some(DownloadMode::Audio));
 

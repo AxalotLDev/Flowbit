@@ -346,7 +346,7 @@ body {
     gap: 8px;
 }
 
-/* В футере основная кнопка сжимается, освобождая место кнопке отмены. */
+/* In the footer, the primary button shrinks to make room for the cancel button. */
 .card-footer .btn-primary {
     flex: 1 1 auto;
     min-width: 0;
@@ -434,7 +434,7 @@ body {
     border-color: rgba(239, 83, 80, .5) !important;
 }
 
-/* Стартовый экран загрузки бинарников */
+/* Startup screen while binaries are downloading */
 .deps-loader {
     display: flex;
     flex-direction: column;

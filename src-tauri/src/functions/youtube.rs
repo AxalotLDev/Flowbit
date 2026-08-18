@@ -8,21 +8,18 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::Notify;
 
-/// Сообщение об отмене — фронтенд распознаёт его и не показывает как ошибку.
+/// Cancellation message — the frontend recognizes it and doesn't show it as an error.
 pub const CANCEL_MSG: &str = "Загрузка отменена";
 
-/// Флаг Windows, подавляющий всплывающее консольное окно дочернего процесса.
-/// Без него при каждом запуске yt-dlp/ffmpeg мигает окно cmd.
+/// Windows flag suppressing the child process's console window popup.
+/// Without it, a cmd window flashes on every yt-dlp/ffmpeg launch.
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
-/// Создаёт tokio-команду, на Windows скрывая консольное окно.
-/// kill_on_drop гарантирует, что процесс будет убит, если его future
-/// уронят (используется для мгновенной отмены).
-/// Декодирует вывод yt-dlp/ffmpeg в строку. Обычно это UTF-8, но на Windows
-/// yt-dlp пишет stdout/stderr в системной ANSI-кодировке (для русской локали —
-/// cp1251/windows-1251), и кириллица бьётся в «ромбики» (U+FFFD) при чтении как
-/// UTF-8. Пробуем UTF-8, при ошибке — windows-1251.
+/// Decodes yt-dlp/ffmpeg output to a string. Usually UTF-8, but on Windows
+/// yt-dlp sometimes writes stdout/stderr in the system ANSI codepage
+/// (windows-1251 for Russian locales), and Cyrillic turns into "diamonds"
+/// (U+FFFD) when read as UTF-8. Try UTF-8 first, fall back to windows-1251.
 pub fn decode_output(bytes: &[u8]) -> String {
     match std::str::from_utf8(bytes) {
         Ok(s) => s.to_string(),
@@ -30,11 +27,11 @@ pub fn decode_output(bytes: &[u8]) -> String {
     }
 }
 
-/// yt-dlp может решить, что вывод — терминал, поддерживающий ANSI-цвета (это
-/// зависит от платформенной эвристики и ненадёжно, когда процесс запущен без
-/// консоли, как на Windows с CREATE_NO_WINDOW). На этот случай подчищаем
-/// управляющие последовательности из уже задекодированной строки, чтобы в
-/// панели логов не оставалось "мусора" вида `\x1b[0;33m`.
+/// yt-dlp may decide the output is a color-capable terminal (this platform
+/// heuristic is unreliable when the process is spawned without a console,
+/// as on Windows with CREATE_NO_WINDOW). As a backstop, strip control
+/// sequences from the already-decoded line so the log panel doesn't show
+/// raw garbage like `\x1b[0;33m`.
 static ANSI_RE: std::sync::LazyLock<Regex> =
     std::sync::LazyLock::new(|| Regex::new(r"\x1b\[[0-9;]*[a-zA-Z]").unwrap());
 
@@ -45,13 +42,13 @@ fn strip_ansi(s: &str) -> std::borrow::Cow<'_, str> {
 pub fn new_command(program: &str) -> Command {
     let mut cmd = Command::new(program);
     cmd.kill_on_drop(true);
-    // Заставляем Python (yt-dlp) выводить UTF-8. На Windows stdout пайпа иначе
-    // кодируется в ANSI-кодовой странице (cp1251), и кириллица в выводе/путях
-    // превращается в «ромбики» (U+FFFD) при декодировании как UTF-8.
+    // Force Python (yt-dlp) to emit UTF-8. On Windows the stdout pipe would
+    // otherwise be encoded in the ANSI codepage (cp1251), turning Cyrillic in
+    // output/paths into "diamonds" (U+FFFD) when decoded as UTF-8.
     cmd.env("PYTHONUTF8", "1");
     cmd.env("PYTHONIOENCODING", "utf-8");
-    // Свой process group: yt-dlp (PyInstaller) форкает дочерний воркер; убить
-    // надо всю группу, а не только бутлоадер (иначе воркер продолжает качать).
+    // Own process group: yt-dlp (PyInstaller) forks a worker process; must
+    // kill the whole group, not just the bootloader (else the worker keeps downloading).
     #[cfg(unix)]
     cmd.process_group(0);
     #[cfg(windows)]
@@ -59,9 +56,9 @@ pub fn new_command(program: &str) -> Command {
     cmd
 }
 
-/// Убивает всё дерево/группу процессов дочернего процесса по его PID.
-/// На Unix процесс запущен как лидер группы (process_group(0)), поэтому
-/// killpg(pid) убивает и бутлоадер, и воркер. На Windows — taskkill /T.
+/// Kills the child process's entire tree/group by PID. On Unix the process
+/// is spawned as its group leader (process_group(0)), so killpg(pid) kills
+/// both the bootloader and the worker. On Windows: taskkill /T.
 fn kill_group(pid: Option<u32>) {
     let Some(pid) = pid else { return };
     #[cfg(unix)]
@@ -78,18 +75,18 @@ fn kill_group(pid: Option<u32>) {
     }
 }
 
-/// Глобальный сигнал отмены текущей загрузки: флаг + Notify.
-/// Флаг ловит отмену, нажатую в момент, когда задача ещё не вошла в select!
-/// (Notify::notify_waiters будит только уже зарегистрированных ждущих).
+/// Global cancellation signal for the current download: flag + Notify.
+/// The flag catches a cancel pressed before the task entered select! (Notify::notify_waiters
+/// only wakes already-registered waiters).
 static CANCEL: Lazy<Notify> = Lazy::new(Notify::new);
 static CANCEL_REQUESTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-/// Ограничивает «жизнь» флага отмены рамками одной загрузки. Сбрасывает флаг
-/// и при входе в загрузку, и при выходе из неё (любым путём — успех, ошибка,
-/// отмена). Без сброса на выходе отменённая загрузка оставляла бы
-/// CANCEL_REQUESTED = true, и последующие запросы метаданных (get_info →
-/// fetch_duration_and_tracks → run_ytdlp_output) мгновенно падали бы с CANCEL_MSG,
-/// из-за чего у следующего видео длительность не определялась (00:00:00).
+/// Scopes the cancel flag's lifetime to a single download. Resets the flag
+/// both on entering a download and on leaving it (any path — success, error,
+/// cancel). Without the reset-on-exit, a cancelled download would leave
+/// CANCEL_REQUESTED = true, and subsequent metadata requests (get_info →
+/// fetch_duration_and_tracks → run_ytdlp_output) would instantly fail with
+/// CANCEL_MSG, so the next video's duration would never resolve (00:00:00).
 pub struct DownloadGuard;
 impl DownloadGuard {
     pub fn new() -> Self {
@@ -107,11 +104,11 @@ fn is_cancelled() -> bool {
     CANCEL_REQUESTED.load(std::sync::atomic::Ordering::SeqCst)
 }
 
-/// Ждёт завершения процесса, но по сигналу отмены мгновенно его убивает.
+/// Waits for the process to finish, but kills it instantly on a cancel signal.
 async fn wait_cancellable(
     child: &mut tokio::process::Child,
 ) -> Result<std::process::ExitStatus, String> {
-    // Отмену могли нажать до входа в select! — проверяем флаг заранее.
+    // Cancel may have been pressed before entering select! — check the flag up front.
     if is_cancelled() {
         kill_group(child.id());
         let _ = child.start_kill();
@@ -137,16 +134,16 @@ pub async fn run_ffmpeg(args: Vec<String>) -> Result<std::process::ExitStatus, S
     wait_cancellable(&mut child).await
 }
 
-/// Tauri-команда: мгновенно прерывает текущую загрузку. Уже скачанные файлы
-/// (в т.ч. завершённые ролики плейлиста и частично скачанные фрагменты) не удаляются.
+/// Tauri command: instantly aborts the current download. Already-downloaded
+/// files (including finished playlist entries and partial fragments) are not deleted.
 #[tauri::command]
 pub fn cancel_download() {
     CANCEL_REQUESTED.store(true, std::sync::atomic::Ordering::SeqCst);
     CANCEL.notify_waiters();
 }
 
-/// Опции устойчивости и скорости сети — аналог флагов из fish-функции `ytdl`:
-/// бесконечные ретраи, докачка, параллельные фрагменты, таймауты, без mtime.
+/// Network resilience/speed options — mirrors the flags from the `ytdl` fish
+/// function: infinite retries, resume, parallel fragments, timeouts, no mtime.
 pub fn network_args() -> Vec<String> {
     [
         "--no-mtime",
@@ -156,8 +153,8 @@ pub fn network_args() -> Vec<String> {
         "infinite",
         "--file-access-retries",
         "10",
-        // 5 c для быстрого переподключения при коротком разрыве. Ретраи бесконечны,
-        // так что застрять нельзя, а при затяжной проблеме есть ручная отмена.
+        // 5s for a fast reconnect on a short drop. Retries are infinite, so
+        // it can't get stuck, and a prolonged issue can still be cancelled manually.
         "--socket-timeout",
         "5",
         "--http-chunk-size",
@@ -169,8 +166,8 @@ pub fn network_args() -> Vec<String> {
         "--newline",
         "--compat-options",
         "filename-sanitization",
-        // Не показывать предупреждение "версия старше 90 дней" на каждой загрузке;
-        // за актуальностью следит фоновая проверка обновлений при старте.
+        // Don't show the "version is over 90 days old" warning on every
+        // download; the background update check at startup keeps it current.
         "--no-update",
     ]
     .iter()
@@ -178,8 +175,8 @@ pub fn network_args() -> Vec<String> {
     .collect()
 }
 
-/// Определяет каталог назначения: переданный путь → платформенный каталог
-/// загрузок (в т.ч. на Android через Tauri path API) → запасные варианты.
+/// Resolves the destination directory: given path → platform downloads
+/// directory (incl. Android via the Tauri path API) → fallbacks.
 pub fn resolve_out_dir(app: &AppHandle, path: Option<String>) -> PathBuf {
     if let Some(p) = path {
         if !p.trim().is_empty() {
@@ -198,9 +195,9 @@ pub fn resolve_out_dir(app: &AppHandle, path: Option<String>) -> PathBuf {
     std::env::current_dir().unwrap_or_else(|_| ".".into())
 }
 
-/// Проверяет наличие новой версии yt-dlp и обновляет бинарник (`yt-dlp -U`).
-/// Возвращает true, если yt-dlp уже актуален либо успешно обновлён.
-/// Вывод стримится во фронтенд как события "ytdlp-log".
+/// Checks for a newer yt-dlp version and updates the binary (`yt-dlp -U`).
+/// Returns true if yt-dlp is already current or was updated successfully.
+/// Output streams to the frontend as "ytdlp-log" events.
 pub async fn ytdlp_self_update(app: Option<AppHandle>) -> Result<bool, String> {
     let status = run_ytdlp_status(
         vec!["--update".into()],
@@ -211,7 +208,7 @@ pub async fn ytdlp_self_update(app: Option<AppHandle>) -> Result<bool, String> {
     Ok(status.success())
 }
 
-/// Tauri-команда: обновление yt-dlp по запросу фронтенда.
+/// Tauri command: update yt-dlp on the frontend's request.
 #[tauri::command]
 pub async fn update_ytdlp(app: AppHandle) -> Result<bool, String> {
     ytdlp_self_update(Some(app)).await
@@ -249,10 +246,10 @@ pub enum DownloadMode {
 
 #[inline]
 pub fn quality_to_format(q: Quality) -> &'static str {
-    // Приоритет — универсально играбельные кодеки H.264 (avc1) + AAC (mp4a) в mp4:
-    // их понимает любой плеер, включая VLC. YouTube по умолчанию отдаёт VP9/AV1 +
-    // Opus, из-за чего VLC пишет «кодек не найден». VP9/AV1 берём только запасным
-    // вариантом (например, для 4K, где H.264 нет).
+    // Prioritize universally playable codecs — H.264 (avc1) + AAC (mp4a) in mp4:
+    // any player, including VLC, handles them. YouTube defaults to VP9/AV1 +
+    // Opus, which makes VLC report "codec not found". VP9/AV1 is only a
+    // fallback (e.g. for 4K, where H.264 isn't available).
     match q {
         Quality::Best => {
             "bv*[vcodec^=avc1]+ba[acodec^=mp4a]/bv*[ext=mp4]+ba[ext=m4a]/bv*+ba/b"
@@ -270,13 +267,13 @@ pub fn quality_to_format(q: Quality) -> &'static str {
     }
 }
 
-/// Клиент YouTube, раскрывающий мультиязычные аудиодорожки. Дефолтный клиент
-/// отдаёт только оригинальную дорожку; web_embedded — все дубляжи. Указываем оба,
-/// чтобы видео осталось в максимальном качестве (до 4K), а аудио — на всех языках.
+/// YouTube client that surfaces multi-language audio dubs. The default client
+/// only returns the original track; web_embedded returns all dubs. Specify
+/// both so video stays at max quality (up to 4K) while audio covers all languages.
 const YT_MULTI_AUDIO_CLIENT: &str = "youtube:player_client=default,web_embedded";
 
-/// Читает путь, записанный yt-dlp через `--print-to-file`. Обычно UTF-8, но на
-/// всякий случай декодируем устойчиво (UTF-8 → cp1251), а не строгим read_to_string.
+/// Reads the path yt-dlp wrote via `--print-to-file`. Usually UTF-8, but
+/// decode leniently (UTF-8 → cp1251) rather than with a strict read_to_string.
 pub async fn read_printed_path(path_file: &Path) -> Option<String> {
     let bytes = tokio::fs::read(path_file).await.ok()?;
     let content = decode_output(&bytes);
@@ -294,8 +291,8 @@ fn clipped_path(file: &Path) -> PathBuf {
     file.with_file_name(format!("{stem}_cut.{ext}"))
 }
 
-/// yt-dlp-фильтр по кодеку видео для нашего короткого имени. VP9 на YouTube
-/// встречается и как `vp9`, и как `vp09.*` — покрываем оба регуляркой (~=).
+/// yt-dlp video-codec filter for our short name. YouTube's VP9 shows up as
+/// both `vp9` and `vp09.*` — cover both with a regex match (~=).
 fn vcodec_filter(codec: Option<&str>) -> Option<&'static str> {
     match codec {
         Some("h264") => Some("[vcodec^=avc1]"),
@@ -313,8 +310,8 @@ fn acodec_filter(codec: Option<&str>) -> Option<&'static str> {
     }
 }
 
-/// Контейнер (--merge-output-format) под выбор аудио. Opus официально не
-/// поддерживается в mp4 — кладём в mkv (играет везде), иначе mp4.
+/// Container (--merge-output-format) for the audio choice. Opus isn't
+/// officially supported in mp4 — use mkv (plays everywhere), else mp4.
 pub fn merge_container(audio_codec: Option<&str>) -> &'static str {
     if audio_codec == Some("opus") {
         "mkv"
@@ -323,11 +320,11 @@ pub fn merge_container(audio_codec: Option<&str>) -> &'static str {
     }
 }
 
-/// Полный селектор формата для видео-режима: качество + кодек видео + кодек
-/// аудио + язык дорожки. Строит список предпочтений от точного совпадения к
-/// всё более общему (через `/`), чтобы загрузка не падала, когда точной
-/// комбинации нет. Для «авто» (кодек не задан) предпочитаем совместимые
-/// H.264 + AAC — их понимает любой плеер, включая VLC.
+/// Full format selector for video mode: quality + video codec + audio codec
+/// + audio track language. Builds a preference list from exact match to
+/// progressively more general (via `/`), so the download doesn't fail when
+/// there's no exact combination. For "auto" (no codec given), prefer
+/// widely-compatible H.264 + AAC — any player, including VLC, handles them.
 fn build_video_format(
     q: Quality,
     video_codec: Option<&str>,
@@ -344,7 +341,7 @@ fn build_video_format(
     let lang = audio_lang.filter(|l| !l.is_empty());
     let langf = lang.map(|l| format!("[language={l}]")).unwrap_or_default();
 
-    // Для «авто» — совместимые кодеки; при явном выборе — заданный.
+    // "Auto" uses compatible codecs; an explicit choice uses the given one.
     let vf = vcodec_filter(video_codec).unwrap_or("[vcodec^=avc1]");
     let af = acodec_filter(audio_codec).unwrap_or("[acodec^=mp4a]");
     let a_explicit = acodec_filter(audio_codec).is_some();
@@ -353,22 +350,22 @@ fn build_video_format(
     let a = |extra: &str| format!("{abase}{langf}{extra}");
 
     let mut prefs: Vec<String> = Vec::new();
-    // 1. точная комбинация (для авто — H.264 + AAC)
+    // 1. exact combination (H.264 + AAC for auto)
     prefs.push(format!("{}+{}", v(vf), a(af)));
-    // 2. выбранный видеокодек + любое аудио (на нужном языке)
+    // 2. chosen video codec + any audio (in the wanted language)
     prefs.push(format!("{}+{}", v(vf), a("")));
-    // 3. если аудиокодек задан явно — любой видеокодек + нужное аудио
+    // 3. if audio codec was given explicitly — any video codec + wanted audio
     if a_explicit {
         prefs.push(format!("{}+{}", v(""), a(af)));
     }
-    // 4. любой видеокодек + любое аудио (на нужном языке)
+    // 4. any video codec + any audio (in the wanted language)
     prefs.push(format!("{}+{}", v(""), a("")));
-    // 5. если был язык — те же варианты без языка (дорожки может не быть)
+    // 5. if a language was set — same options without it (track may not exist)
     if lang.is_some() {
         prefs.push(format!("{}+{}", v(vf), abase));
         prefs.push(format!("{}+{}", v(""), abase));
     }
-    // 6. финальный общий fallback
+    // 6. final generic fallback
     prefs.push(format!("b{cap}"));
     prefs.push("b".into());
 
@@ -376,8 +373,8 @@ fn build_video_format(
     prefs.join("/")
 }
 
-/// Селектор формата для режима «только аудио»: выбор исходной дорожки по языку
-/// и кодеку (выходной контейнер задаётся отдельно через --audio-format).
+/// Format selector for audio-only mode: pick the source track by language
+/// and codec (output container is set separately via --audio-format).
 fn build_audio_format(audio_codec: Option<&str>, audio_lang: Option<&str>) -> String {
     let lang = audio_lang.filter(|l| !l.is_empty());
     let langf = lang.map(|l| format!("[language={l}]")).unwrap_or_default();
@@ -399,7 +396,7 @@ fn build_audio_format(audio_codec: Option<&str>, audio_lang: Option<&str>) -> St
     prefs.join("/")
 }
 
-/// Порядок отображения кодеков — фиксированный, чтобы UI был стабилен.
+/// Fixed codec display order, so the UI stays stable.
 const VCODEC_ORDER: [&str; 3] = ["h264", "vp9", "av1"];
 const ACODEC_ORDER: [&str; 2] = ["aac", "opus"];
 
@@ -464,12 +461,12 @@ pub fn parse_audio_codecs(json: &serde_json::Value) -> Vec<String> {
         .collect()
 }
 
-/// Извлекает коды языков аудиодорожек из JSON yt-dlp (уникальные, по порядку).
+/// Extracts audio track language codes from yt-dlp JSON (unique, in order).
 pub fn parse_audio_langs(json: &serde_json::Value) -> Vec<String> {
     let mut langs: Vec<String> = Vec::new();
     if let Some(formats) = json["formats"].as_array() {
         for f in formats {
-            // Только аудио-дорожки (без видео) с указанным языком.
+            // Audio-only tracks (no video) with a language set.
             let audio_only = f["vcodec"].as_str() == Some("none")
                 && f["acodec"].as_str().is_some_and(|a| a != "none");
             if audio_only {
@@ -484,12 +481,9 @@ pub fn parse_audio_langs(json: &serde_json::Value) -> Vec<String> {
     langs
 }
 
-/// Один -J запрос (клиент web_embedded) → длительность и языки аудиодорожек.
-/// Мультиязычные дубляжи YouTube видны только через web_embedded. Так и карточка,
-/// и блок выбора дорожки появляются сразу вместе (без второго запроса).
-/// Метаданные видео из одного вызова `yt-dlp -J`. Используются как запасной
-/// источник, когда oembed недоступен (401/404 у видео с запретом встраивания,
-/// возрастным/региональным ограничением).
+/// Video metadata from a single `yt-dlp -J` call. Used as a fallback source
+/// when oembed is unavailable (401/404 for embed-restricted, age- or
+/// region-locked videos).
 #[derive(Default)]
 pub struct YtMeta {
     pub duration: Option<u64>,
@@ -499,15 +493,15 @@ pub struct YtMeta {
     pub title: Option<String>,
     pub author: Option<String>,
     pub thumbnail: Option<String>,
-    /// Причина провала (последняя строка "ERROR: ..." от yt-dlp), если и
-    /// web_embedded, и дефолтный клиент не смогли вернуть метаданные — чтобы
-    /// показать пользователю настоящую причину (например, "Sign in to
-    /// confirm you're not a bot"), а не общую фразу "не удалось получить".
+    /// Failure reason (the last "ERROR: ..." line from yt-dlp), set when
+    /// neither web_embedded nor the default client could return metadata —
+    /// so the user sees the real cause (e.g. "Sign in to confirm you're not
+    /// a bot") instead of a generic "failed to fetch" message.
     pub error: Option<String>,
 }
 
-/// Последняя строка "ERROR: ..." из stderr yt-dlp, если есть — иначе весь
-/// непустой stderr целиком.
+/// The last "ERROR: ..." line from yt-dlp's stderr, if any — otherwise the
+/// whole non-empty stderr.
 fn extract_error_reason(stderr: &str) -> Option<String> {
     stderr
         .lines()
@@ -520,9 +514,9 @@ fn extract_error_reason(stderr: &str) -> Option<String> {
         })
 }
 
-/// Один вызов `yt-dlp -J`. `multi_audio` включает web_embedded-клиент, который
-/// раскрывает мультиязычные дубляжи, но иногда отдаёт неполный ответ (без
-/// duration/формата) — поэтому есть откат на дефолтный клиент.
+/// A single `yt-dlp -J` call. `multi_audio` enables the web_embedded client,
+/// which surfaces multi-language dubs but sometimes returns an incomplete
+/// response (missing duration/format) — hence the fallback to the default client.
 async fn run_meta_json(
     url: &str,
     multi_audio: bool,
@@ -542,9 +536,10 @@ async fn run_meta_json(
     }
     let json = serde_json::from_str::<serde_json::Value>(&decode_output(&output.stdout))
         .map_err(|e| format!("Invalid yt-dlp output: {e}"))?;
-    // При неудачной экстракции (в т.ч. капча «not a bot») yt-dlp печатает "null"
-    // и выходит с кодом 0. Это не метаданные — считаем провалом, чтобы сработал
-    // откат на другой клиент, а не тихо получить duration = null (00:00:00).
+    // On a failed extraction (incl. the "not a bot" captcha), yt-dlp prints
+    // "null" and exits 0. That's not metadata — treat it as a failure so the
+    // fallback to another client kicks in, instead of silently getting
+    // duration = null (00:00:00).
     if !json.is_object() {
         return Err(
             extract_error_reason(&stderr_text).unwrap_or_else(|| "yt-dlp returned no metadata".into())
@@ -553,10 +548,10 @@ async fn run_meta_json(
     Ok(json)
 }
 
-/// Пытается получить валидный JSON метаданных, устойчиво к капче «not a bot».
-/// Сначала web_embedded (раскрывает дубляжи); если пусто/капча — дефолтный
-/// клиент с несколькими ретраями с задержкой: капча обычно снимается через пару
-/// секунд, поэтому один отказ ещё не значит, что видео недоступно.
+/// Tries to get valid metadata JSON, resilient to the "not a bot" captcha.
+/// web_embedded first (surfaces dubs); if empty/captcha'd, the default
+/// client with a few delayed retries — the captcha usually clears in a
+/// couple seconds, so one failure doesn't mean the video is unavailable.
 async fn fetch_meta_json_resilient(url: &str) -> Result<serde_json::Value, String> {
     let mut last_err = match run_meta_json(url, true, &[]).await {
         Ok(j) => return Ok(j),
@@ -571,10 +566,10 @@ async fn fetch_meta_json_resilient(url: &str) -> Result<serde_json::Value, Strin
             Err(e) => last_err = e,
         }
     }
-    // Плейн-ретраи исчерпаны. Если причина — анти-бот проверка YouTube, куки
-    // из установленного браузера ретраями не лечатся, поэтому пробуем их
-    // здесь один раз (а не на каждой из попыток выше — иначе время до
-    // окончательного провала умножается на число попыток).
+    // Plain retries exhausted. If the cause is YouTube's anti-bot check,
+    // retries won't fix it regardless of browser cookies, so try them here
+    // exactly once (not on every attempt above — that would multiply the
+    // time to a final failure).
     if looks_like_bot_check(&last_err) {
         if let Some(browser) = *COOKIE_BROWSER {
             let cookie_args = vec!["--cookies-from-browser".to_string(), browser.to_string()];
@@ -661,9 +656,9 @@ pub async fn fetch_duration(url: &str) -> Option<u64> {
     let output = run_ytdlp_output(args, "Failed to fetch duration".to_string(), None)
         .await
         .ok()?;
-    // Берём первую непустую строку и игнорируем "NA" (yt-dlp печатает так для
-    // отсутствующей длительности, напр. у прямых эфиров). Разбор по строкам,
-    // а не по всему буферу, устойчив к \r\n и лишнему выводу на Windows.
+    // Take the first non-empty line and ignore "NA" (yt-dlp prints that for a
+    // missing duration, e.g. live streams). Parsing line-by-line rather than
+    // the whole buffer is resilient to \r\n and extra output on Windows.
     String::from_utf8_lossy(&output.stdout)
         .lines()
         .map(str::trim)
@@ -699,10 +694,10 @@ fn emit_log(app: &Option<AppHandle>, line: &str) {
     }
 }
 
-/// Читает вывод построчно по байтам и декодирует каждую строку через
-/// decode_output. В отличие от tokio `.lines()` (только UTF-8, обрывается на
-/// первой не-UTF-8 строке), это не теряет логи и корректно показывает кириллицу
-/// из cp1251-вывода yt-dlp на Windows.
+/// Reads output line-by-line from raw bytes and decodes each line via
+/// decode_output. Unlike tokio's `.lines()` (UTF-8 only, aborts on the first
+/// non-UTF-8 line), this doesn't lose log lines and correctly shows Cyrillic
+/// from yt-dlp's cp1251 output on Windows.
 async fn stream_lines(
     reader: impl tokio::io::AsyncRead + Unpin,
     app: Option<AppHandle>,
@@ -721,11 +716,11 @@ async fn stream_lines(
     lines
 }
 
-/// Общие флаги для каждого запуска yt-dlp: расположение ffmpeg, JS-рантайм
-/// для чтения n-sig и `--color never` — платформенное определение поддержки
-/// ANSI-цвета ненадёжно, когда процесс запущен без консоли (Windows,
-/// CREATE_NO_WINDOW), и без явного отключения в панель логов иногда попадают
-/// сырые управляющие последовательности.
+/// Flags shared by every yt-dlp run: ffmpeg location, the JS runtime for
+/// reading n-sig, and `--color never` — platform detection of ANSI color
+/// support is unreliable when the process is spawned without a console
+/// (Windows, CREATE_NO_WINDOW), and without disabling it explicitly the log
+/// panel sometimes gets raw control sequences.
 fn default_ytdlp_args() -> Vec<String> {
     vec![
         "--ffmpeg-location".into(),
@@ -737,20 +732,19 @@ fn default_ytdlp_args() -> Vec<String> {
     ]
 }
 
-/// YouTube иногда требует подтверждения "я не бот" для анонимных запросов —
-/// без авторизации это никаким количеством ретраев не обойти, но у yt-dlp
-/// есть `--cookies-from-browser`, который читает уже залогиненную сессию
-/// прямо из установленного браузера пользователя.
+/// YouTube sometimes demands an "I'm not a bot" confirmation for anonymous
+/// requests — no amount of retrying gets past that without authentication,
+/// but yt-dlp has `--cookies-from-browser`, which reads an already-logged-in
+/// session straight from the user's installed browser.
 fn looks_like_bot_check(stderr: &str) -> bool {
     let s = stderr.to_lowercase();
     s.contains("sign in to confirm") || s.contains("confirm you\u{2019}re not a bot") || s.contains("confirm you're not a bot")
 }
 
-/// Первый браузер с профилем на диске — без участия пользователя и без
-/// настроек. yt-dlp сам находит профиль/куки по умолчанию внутри каждого
-/// браузера, нам нужно только подтвердить, что он вообще установлен.
-/// Проверяется один раз за время работы приложения: раскладка профилей
-/// не меняется на лету.
+/// First browser with a profile on disk — no user involvement, no settings.
+/// yt-dlp finds each browser's default profile/cookies itself; we only need
+/// to confirm it's installed at all. Checked once per process run: profile
+/// layout doesn't change at runtime.
 fn detect_browser() -> Option<&'static str> {
     #[cfg(target_os = "windows")]
     {
@@ -916,7 +910,7 @@ async fn spawn_ytdlp_output(
         }
     });
 
-    // pid берём заранее: в ветке отмены child уже перемещён в wait_with_output.
+    // Grab the pid up front: on the cancel branch child has already moved into wait_with_output.
     let pid = child.id();
     if is_cancelled() {
         kill_group(pid);
@@ -925,15 +919,15 @@ async fn spawn_ytdlp_output(
     let mut output = tokio::select! {
         out = child.wait_with_output() => out.map_err(|e| format!("{error_format}: {e}"))?,
         _ = CANCEL.notified() => {
-            kill_group(pid);   // убить всю группу, а не только бутлоадер
+            kill_group(pid);   // kill the whole group, not just the bootloader
             return Err(CANCEL_MSG.into());
         }
     };
 
-    // stderr был вычитан построчно в stream_lines (для live-логов), поэтому
-    // output.stderr после wait_with_output пуст — восстанавливаем его из
-    // собранных строк, иначе вызывающий код (twitch.rs, run_meta_json) не
-    // может показать реальную причину ошибки yt-dlp.
+    // stderr was consumed line-by-line in stream_lines (for live logs), so
+    // output.stderr is empty after wait_with_output — rebuild it from the
+    // collected lines, otherwise callers (twitch.rs, run_meta_json) can't
+    // show the real yt-dlp error reason.
     if let Ok(err_lines) = h_err.await {
         if !err_lines.is_empty() {
             output.stderr = err_lines.join("\n").into_bytes();
@@ -1027,13 +1021,14 @@ pub async fn download_video(
     );
     let container = merge_container(audio_codec.as_deref().filter(|c| !c.is_empty()));
 
-    // Отдельный каталог для промежуточных файлов (-P temp:), как в fish-функции.
+    // Separate directory for intermediate files (-P temp:), like the fish function.
     let tmp_dir = out_dir.join(".flowbit-tmp");
     let _ = tokio::fs::create_dir_all(&tmp_dir).await;
-    // yt-dlp пишет сюда реальный путь в UTF-8. Имя файла НЕ строим сами из title:
-    // на Windows stdout yt-dlp бывает в cp1251, и кириллица бьётся в «ромбики».
-    // %(title)s даёт yt-dlp писать файл с корректным Unicode-именем, а путь
-    // читаем из файла (--print-to-file всегда UTF-8), а не из stdout.
+    // yt-dlp writes the real path here in UTF-8. Don't build the filename
+    // ourselves from title: on Windows yt-dlp's stdout is sometimes cp1251,
+    // and Cyrillic turns into "diamonds". %(title)s lets yt-dlp write the
+    // file with a correct Unicode name, and the path is read from this file
+    // (--print-to-file is always UTF-8), not from stdout.
     let path_file = tmp_dir.join("__filepath.txt");
     let _ = tokio::fs::remove_file(&path_file).await;
 
@@ -1048,7 +1043,7 @@ pub async fn download_video(
         "-P".into(),
         format!("temp:{}", tmp_dir.to_string_lossy()),
     ];
-    // Для конкретной аудиодорожки нужен клиент, раскрывающий дубляжи.
+    // A specific audio track needs the client that surfaces dubs.
     if audio_lang.as_deref().is_some_and(|l| !l.is_empty()) {
         args.push("--extractor-args".into());
         args.push(YT_MULTI_AUDIO_CLIENT.into());
@@ -1063,7 +1058,7 @@ pub async fn download_video(
 
     let status = run_ytdlp_status(args, "Failed to run yt-dlp".to_string(), app.clone()).await?;
 
-    // Читаем путь ДО удаления tmp_dir.
+    // Read the path BEFORE removing tmp_dir.
     let real_path = read_printed_path(&path_file).await;
 
     cleanup_temp(&out_dir).await;
@@ -1153,13 +1148,12 @@ async fn download_audio(
 
     let tmp_dir = out_dir.join(".flowbit-tmp");
     let _ = tokio::fs::create_dir_all(&tmp_dir).await;
-    // Имя файла отдаём yt-dlp (%(title)s), путь читаем из UTF-8 файла — см. download_video.
+    // Filename comes from yt-dlp (%(title)s), path read from the UTF-8 file — see download_video.
     let path_file = tmp_dir.join("__filepath.txt");
     let _ = tokio::fs::remove_file(&path_file).await;
 
     let ac = audio_codec.as_deref().filter(|c| !c.is_empty());
-    // Выходной формат аудио: opus/aac сохраняем как есть (без потерь на
-    // перекодировании), для «авто» — mp3 (играет везде).
+    // Output audio format: keep opus/aac as-is (no re-encode loss), "auto" -> mp3 (plays everywhere).
     let out_audio_format = match ac {
         Some("opus") => "opus",
         Some("aac") => "m4a",
@@ -1257,7 +1251,7 @@ mod decode_tests {
     }
     #[test]
     fn cp1251_fallback() {
-        // "Привет" в cp1251
+        // "Привет" (Cyrillic "hello") in cp1251
         let cp1251 = [0xCF, 0xF0, 0xE8, 0xE2, 0xE5, 0xF2];
         assert_eq!(decode_output(&cp1251), "Привет");
     }

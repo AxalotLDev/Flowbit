@@ -36,9 +36,9 @@ pub fn is_playlist_url(url: String) -> bool {
 
     let is_playlist_page = u.contains("youtube.com") && u.contains("/playlist");
 
-    // list= без конкретного видео. Ссылка на одиночное видео (/watch?v=... или
-    // youtu.be/<id>) с параметром &list=... (радио, "Смотреть позже") считается
-    // одиночным видео, а не плейлистом.
+    // list= without a specific video. A link to a single video (/watch?v=...
+    // or youtu.be/<id>) carrying &list=... (radio, "watch later") counts as a
+    // single video, not a playlist.
     let points_to_single_video =
         (u.contains("watch") && u.contains("v=")) || u.contains("youtu.be");
     let is_list_only =
@@ -125,8 +125,8 @@ pub async fn download_playlist(
         .await
         .map_err(|e| format!("Cannot create directory: {e}"))?;
 
-    // Относительный шаблон -o (yt-dlp сам создаёт подпапку плейлиста), каталоги
-    // задаём через -P. Абсолютный путь в -o заставил бы yt-dlp игнорировать --paths.
+    // Relative -o template (yt-dlp creates the playlist subfolder itself),
+    // directories set via -P. An absolute path in -o would make yt-dlp ignore --paths.
     let out_tmpl = "%(playlist_title)s/%(playlist_index)02d - %(title)s.%(ext)s".to_string();
 
     let tmp_dir = base_dir.join(".flowbit-tmp");
@@ -173,8 +173,8 @@ pub async fn download_playlist(
         run_ytdlp_status(args, "Playlist download failed".into(), app_opt.clone()).await?;
 
     cleanup_temp(&base_dir).await;
-    // Убираем временный каталог до подсчёта файлов и поиска папки плейлиста,
-    // иначе newest_subdir мог бы принять его за папку с загрузками.
+    // Remove the temp dir before counting files / locating the playlist folder,
+    // otherwise newest_subdir could mistake it for a downloads folder.
     let _ = tokio::fs::remove_dir_all(&tmp_dir).await;
 
     if !status.success() {

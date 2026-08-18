@@ -8,8 +8,8 @@ use yt_dlp::Downloader;
 
 static LIBS_PATH: OnceLock<String> = OnceLock::new();
 
-/// Готовы ли бинарники (yt-dlp/ffmpeg/…). До готовности фронтенд показывает
-/// экран загрузки, а не «зависшее» пустое окно.
+/// Whether the binaries (yt-dlp/ffmpeg/…) are ready. Until then the frontend
+/// shows a loading screen instead of a blank "stuck" window.
 pub static DEPS_READY: AtomicBool = AtomicBool::new(false);
 
 #[tauri::command]
@@ -26,9 +26,9 @@ pub fn libs_dir() -> &'static str {
     LIBS_PATH.get().expect("LIBS_PATH not initialized yet")
 }
 
-/// Собирает путь к файлу в libs через нативный разделитель ОС. НЕЛЬЗЯ использовать
-/// `format!("{}/{}")`: на Windows получается путь со смешанными разделителями
-/// (`C:\...\libs/yt-dlp.exe`), и CreateProcess не находит файл (os error 2).
+/// Joins a path inside libs using the native OS separator. MUST NOT use
+/// `format!("{}/{}")`: on Windows that produces a mixed-separator path
+/// (`C:\...\libs/yt-dlp.exe`), and CreateProcess can't find the file (os error 2).
 #[inline]
 fn lib_path(file_name: &str) -> String {
     Path::new(libs_dir())
@@ -151,9 +151,10 @@ pub async fn download_quickjs(libs_dir: &Path) -> Result<(), String> {
 
 const FFPROBE_BUILD_VERSION: &str = "6.1";
 
-/// Платформенный слаг ffbinaries для текущей ОС/арх. ffbinaries публикует каждый
-/// бинарник отдельным zip (внутри архива — ровно один файл ffprobe[.exe]), в
-/// отличие от boul2gom/ffmpeg-builds, где в архиве лежит только ffmpeg.
+/// Platform slug for ffbinaries matching the current OS/arch. ffbinaries
+/// publishes each binary as its own zip (the archive contains exactly one
+/// ffprobe[.exe] file), unlike boul2gom/ffmpeg-builds, whose archive only
+/// has ffmpeg.
 fn ffprobe_platform() -> &'static str {
     if cfg!(windows) {
         "win-64"
@@ -168,9 +169,9 @@ fn ffprobe_platform() -> &'static str {
     }
 }
 
-/// Докачивает ffprobe рядом с ffmpeg. yt-dlp-крейт кладёт только ffmpeg, а yt-dlp
-/// ищет ffprobe в том же каталоге (иначе «WARNING: ffprobe not found»).
-/// Берём отдельный zip с ffprobe из ffbinaries-prebuilt.
+/// Downloads ffprobe alongside ffmpeg. The yt-dlp crate only ships ffmpeg,
+/// but yt-dlp looks for ffprobe in the same directory (otherwise "WARNING:
+/// ffprobe not found"). Fetched as a separate zip from ffbinaries-prebuilt.
 pub async fn download_ffprobe(libs_dir: &Path) -> Result<(), String> {
     let file_name = if cfg!(windows) { "ffprobe.exe" } else { "ffprobe" };
     let dest = libs_dir.join(file_name);
@@ -203,7 +204,7 @@ pub async fn download_ffprobe(libs_dir: &Path) -> Result<(), String> {
         .await
         .map_err(|e| e.to_string())?;
 
-    // Архив плоский — ищем запись, оканчивающуюся на ffprobe(.exe).
+    // The archive is flat — find the entry ending in ffprobe(.exe).
     let mut archive =
         zip::ZipArchive::new(std::io::Cursor::new(bytes)).map_err(|e| e.to_string())?;
     let mut found = None;
@@ -233,9 +234,9 @@ pub async fn download_ffprobe(libs_dir: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// Базовый каталог данных приложения. На Windows — короткий `%APPDATA%\flowbit`
-/// (без reverse-domain идентификатора), на остальных платформах — стандартный
-/// app_data_dir от Tauri (`.../com.axalotl.flowbit`).
+/// App data root. On Windows a short `%APPDATA%\flowbit` (no reverse-domain
+/// identifier); on other platforms Tauri's standard app_data_dir
+/// (`.../com.axalotl.flowbit`).
 pub fn app_data_root(app: &AppHandle) -> Result<PathBuf, String> {
     #[cfg(windows)]
     if let Some(base) = dirs::data_dir() {
@@ -255,9 +256,9 @@ pub async fn install_dependencies(app: &AppHandle) -> Result<(), String> {
 
     init_libs_dir_path(&libs_dir);
 
-    // Быстрый путь: если yt-dlp и ffmpeg уже на месте — не перекачиваем их заново
-    // (иначе экран загрузки мигал бы при каждом запуске). Свежесть yt-dlp
-    // обеспечивает фоновый self-update после старта.
+    // Fast path: if yt-dlp and ffmpeg are already present, don't re-download
+    // them (otherwise the loading screen would flash on every launch). The
+    // background self-update after startup keeps yt-dlp fresh.
     let yt = libs_dir.join(if cfg!(windows) { "yt-dlp.exe" } else { "yt-dlp" });
     let ff = libs_dir.join(if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" });
     if !(yt.exists() && ff.exists()) {
@@ -270,7 +271,7 @@ pub async fn install_dependencies(app: &AppHandle) -> Result<(), String> {
     }
 
     download_quickjs(&libs_dir).await?;
-    // ffprobe — best-effort: без него скачивание работает, только с предупреждением.
+    // ffprobe is best-effort: downloading still works without it, just with a warning.
     if let Err(e) = download_ffprobe(&libs_dir).await {
         eprintln!("ffprobe download failed: {e}");
     }

@@ -64,10 +64,10 @@ function formatDuration(s: number) {
     return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(sec).padStart(2, "0")}`;
 }
 
-// Должно совпадать с CANCEL_MSG в бэкенде (youtube.rs).
+// Must match CANCEL_MSG on the backend (youtube.rs).
 const CANCEL_MSG = "Загрузка отменена";
 
-// Код языка ("en", "ru", "en-US") → название на русском ("английский", …).
+// Language code ("en", "ru", "en-US") -> display name in Russian ("английский", …).
 function langName(code: string): string {
     try {
         return new Intl.DisplayNames(["ru"], {type: "language"}).of(code) ?? code;
@@ -84,7 +84,7 @@ const QUALITIES: { value: Quality; label: string }[] = [
     {value: "worst", label: "Худшее"},
 ];
 
-// Понятные названия кодеков (короткие имена приходят с бэкенда).
+// Human-readable codec names (short names come from the backend).
 const VCODEC_NAMES: Record<string, string> = {h264: "H.264", vp9: "VP9", av1: "AV1"};
 const ACODEC_NAMES: Record<string, string> = {aac: "AAC", opus: "Opus"};
 
@@ -132,7 +132,7 @@ function extractYouTubeId(url: string): string | null {
         const u = new URL(url);
         if (u.hostname.includes("youtu.be")) return u.pathname.slice(1).split("/")[0] || null;
         if (u.hostname.includes("youtube.com")) {
-            // Обычные ролики — ?v=ID; shorts/embed/live хранят ID в пути.
+            // Regular videos — ?v=ID; shorts/embed/live carry the ID in the path.
             const v = u.searchParams.get("v");
             if (v) return v;
             const m = u.pathname.match(/^\/(?:shorts|embed|live)\/([^/?#]+)/);
@@ -144,10 +144,10 @@ function extractYouTubeId(url: string): string | null {
     }
 }
 
-// Встроенный YouTube-плеер (iframe) не работает в Tauri на Linux/webkit: YouTube
-// отклоняет embed из-за отсутствия валидного Referer у протокола tauri://localhost
-// (открытый баг tauri#14422). Поэтому показываем превью-обложку, а сам плеер
-// открываем во внешнем браузере — обычный <img> под это ограничение не попадает.
+// The embedded YouTube player (iframe) doesn't work in Tauri on Linux/webkit:
+// YouTube rejects the embed because tauri://localhost has no valid Referer
+// (open bug tauri#14422). So show a thumbnail preview instead, and open the
+// actual player in an external browser — a plain <img> isn't subject to this restriction.
 function YouTubePreview({videoId, url}: { videoId: string; url: string }) {
     const thumb = `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`;
     return (
@@ -239,7 +239,7 @@ export default function App() {
     const [downloadPath, setDownloadPath] = useState<string | null>(null);
     const [logs, setLogs] = useState<{ text: string; kind: "error" | "warning" | "success" | "info" }[]>([]);
 
-    // Готовность бинарников (yt-dlp/ffmpeg). Пока не готово — экран загрузки.
+    // Binary readiness (yt-dlp/ffmpeg). Show a loading screen until it's ready.
     const [depsReady, setDepsReady] = useState(false);
     const [depsError, setDepsError] = useState<string | null>(null);
 
@@ -248,11 +248,11 @@ export default function App() {
 
     useEffect(() => {
         let cancelled = false;
-        // Во время загрузки события "ytdlp-log" прилетают пачками в реальном
-        // времени; ре-рендер лог-панели на каждое отдельное событие лишний —
-        // копим их в буфере и сбрасываем разом на кадр анимации. На WebView2
-        // (Windows) это особенно заметно: без батчинга под частым потоком
-        // событий панель логов подтормаживает и визуально "спотыкается".
+        // During a download, "ytdlp-log" events arrive in rapid real-time bursts;
+        // re-rendering the log panel on every single event is wasteful — buffer
+        // them and flush once per animation frame. On WebView2 (Windows) this
+        // is especially noticeable: without batching, the log panel stutters
+        // and visibly lags under a fast event stream.
         let buffer: { text: string; kind: "error" | "warning" | "success" | "info" }[] = [];
         let rafId = 0;
 
@@ -279,8 +279,8 @@ export default function App() {
         };
     }, []);
 
-    // Готовность бинарников: сначала слушаем события, затем спрашиваем текущее
-    // состояние (вдруг установка уже завершилась до подписки).
+    // Binary readiness: subscribe to events first, then ask for the current
+    // state (install may have finished before we subscribed).
     useEffect(() => {
         let cancelled = false;
         const unlisteners: (() => void)[] = [];
@@ -313,8 +313,8 @@ export default function App() {
         setResult(null);
         setPlaylistResult(null);
         setError("");
-        // Сбрасываем время фрагмента, иначе оно "залипает" от прошлого видео,
-        // если у нового длительность не получена (частый случай на Windows).
+        // Reset the clip range, otherwise it "sticks" from the previous video
+        // when the new one's duration can't be resolved (common on Windows).
         setStartTime("00:00:00");
         setEndTime("00:00:00");
         setTimeError("");
@@ -482,7 +482,7 @@ export default function App() {
         try {
             await invoke("cancel_download");
         } catch {
-            /* игнорируем — команда только шлёт сигнал отмены */
+            /* ignore — the command only sends a cancellation signal */
         }
     }, []);
 

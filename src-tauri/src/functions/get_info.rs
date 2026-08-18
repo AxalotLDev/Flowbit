@@ -31,10 +31,11 @@ pub struct VideoInfo {
 pub async fn get_youtube_info(app: tauri::AppHandle, url: String) -> Result<VideoInfo, String> {
     let oembed_url = format!("https://www.youtube.com/oembed?url={}&format=json", url);
 
-    // oembed (быстрые title/автор/обложка) и один -J (длительность + аудиодорожки
-    // + запасные метаданные) параллельно — карточка и блок выбора дорожки готовы
-    // одновременно. Если oembed недоступен (401/404 у видео с запретом встраивания
-    // или возрастным ограничением) — берём всё из yt-dlp, а не падаем с ошибкой.
+    // oembed (fast title/author/thumbnail) and a single -J call (duration +
+    // audio tracks + fallback metadata) run in parallel — the card and the
+    // track-selection block appear together. If oembed is unavailable (401/404
+    // for embed-restricted or age-restricted videos), fall back to yt-dlp
+    // instead of failing outright.
     let (oembed_res, meta) =
         tokio::join!(client().get(&oembed_url).send(), fetch_yt_meta(&url, Some(app)));
 
@@ -67,10 +68,10 @@ pub async fn get_youtube_info(app: tauri::AppHandle, url: String) -> Result<Vide
         .unwrap_or("")
         .to_string();
 
-    // Совсем ничего не вытащили (и oembed, и yt-dlp пусты) — только тогда ошибка.
-    // Пробрасываем настоящую причину от yt-dlp (например, "Sign in to confirm
-    // you're not a bot"), а не общую фразу — иначе пользователь не поймёт, что
-    // видео требует авторизации/недоступно, а не что сломалось приложение.
+    // Only an error when we got nothing at all from either source.
+    // Propagate yt-dlp's actual reason (e.g. "Sign in to confirm you're not a
+    // bot") instead of a generic message — otherwise the user can't tell the
+    // video needs sign-in/is unavailable from the app being broken.
     if title.is_empty() && thumbnail_url.is_empty() {
         return Err(meta.error.unwrap_or_else(|| "Failed to fetch video info".into()));
     }
