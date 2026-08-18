@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Запуск Flowbit в режиме разработки (десктоп, с hot-reload).
-#   ./dev.sh              — обычный запуск
-#   ./dev.sh --wayland    — принудительно использовать Wayland-бэкенд GTK
-#   ./dev.sh <args...>    — любые доп. аргументы пробрасываются в `tauri dev`
+# Run Flowbit in development mode (desktop, with hot-reload).
+#   ./dev.sh              — normal run
+#   ./dev.sh --wayland    — force the Wayland GTK backend
+#   ./dev.sh <args...>    — any extra arguments are forwarded to `tauri dev`
 set -euo pipefail
 cd "$(dirname "$0")"
 

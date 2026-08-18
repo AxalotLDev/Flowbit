@@ -9,7 +9,7 @@ use tokio::process::Command;
 use tokio::sync::Notify;
 
 /// Cancellation message — the frontend recognizes it and doesn't show it as an error.
-pub const CANCEL_MSG: &str = "Загрузка отменена";
+pub const CANCEL_MSG: &str = "Download cancelled";
 
 /// Windows flag suppressing the child process's console window popup.
 /// Without it, a cmd window flashes on every yt-dlp/ffmpeg launch.
@@ -176,7 +176,7 @@ pub fn network_args() -> Vec<String> {
 }
 
 /// Resolves the destination directory: given path → platform downloads
-/// directory (incl. Android via the Tauri path API) → fallbacks.
+/// directory (via the Tauri path API) → fallbacks.
 pub fn resolve_out_dir(app: &AppHandle, path: Option<String>) -> PathBuf {
     if let Some(p) = path {
         if !p.trim().is_empty() {
@@ -588,7 +588,7 @@ pub async fn fetch_yt_meta(url: &str, app: Option<AppHandle>) -> YtMeta {
         Err(reason) => {
             let duration = fetch_duration(url).await;
             if duration.is_none() {
-                emit_log(&app, &format!("[flowbit] Не удалось получить данные видео: {reason}"));
+                emit_log(&app, &format!("[flowbit] Failed to fetch video data: {reason}"));
             }
             return YtMeta {
                 duration,
@@ -877,7 +877,7 @@ pub async fn run_ytdlp_status(
     }
     emit_log(
         &app,
-        &format!("[flowbit] YouTube требует подтверждения \"я не бот\" — пробуем куки из {browser}…"),
+        &format!("[flowbit] YouTube requires \"I'm not a bot\" confirmation — trying cookies from {browser}…"),
     );
     let mut retry_args = args;
     retry_args.push("--cookies-from-browser".into());
@@ -954,7 +954,7 @@ pub async fn run_ytdlp_output(
     }
     emit_log(
         &app,
-        &format!("[flowbit] YouTube требует подтверждения \"я не бот\" — пробуем куки из {browser}…"),
+        &format!("[flowbit] YouTube requires \"I'm not a bot\" confirmation — trying cookies from {browser}…"),
     );
     let mut retry_args = args;
     retry_args.push("--cookies-from-browser".into());

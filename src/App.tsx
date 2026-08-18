@@ -65,23 +65,23 @@ function formatDuration(s: number) {
 }
 
 // Must match CANCEL_MSG on the backend (youtube.rs).
-const CANCEL_MSG = "Загрузка отменена";
+const CANCEL_MSG = "Download cancelled";
 
-// Language code ("en", "ru", "en-US") -> display name in Russian ("английский", …).
+// Language code ("en", "ru", "en-US") -> display name in English ("English", …).
 function langName(code: string): string {
     try {
-        return new Intl.DisplayNames(["ru"], {type: "language"}).of(code) ?? code;
+        return new Intl.DisplayNames(["en"], {type: "language"}).of(code) ?? code;
     } catch {
         return code;
     }
 }
 
 const QUALITIES: { value: Quality; label: string }[] = [
-    {value: "best", label: "Лучшее"},
+    {value: "best", label: "Best"},
     {value: "high", label: "1080p"},
     {value: "medium", label: "720p"},
     {value: "low", label: "480p"},
-    {value: "worst", label: "Худшее"},
+    {value: "worst", label: "Worst"},
 ];
 
 // Human-readable codec names (short names come from the backend).
@@ -121,7 +121,7 @@ const ChevronIcon = ({open}: { open: boolean }) => (
 
 function classifyLine(line: string): "error" | "warning" | "success" | "info" {
     const l = line.toLowerCase();
-    if (l.includes("error") || l.includes("failed") || l.includes("ошибка")) return "error";
+    if (l.includes("error") || l.includes("failed")) return "error";
     if (l.includes("warning") || l.includes("warn")) return "warning";
     if (l.includes("100%") || l.includes("destination") || l.includes("finished")) return "success";
     return "info";
@@ -154,7 +154,7 @@ function YouTubePreview({videoId, url}: { videoId: string; url: string }) {
         <div className="thumb-wrap">
             <img
                 src={thumb}
-                alt="Превью видео"
+                alt="Video preview"
                 style={{cursor: "pointer"}}
                 onClick={async () => await openUrl(url)}
             />
@@ -181,12 +181,12 @@ const LogPanel = memo(function LogPanel({logs, downloading}: {
             <button className="log-toggle" onClick={() => setOpen((v) => !v)}>
                 <span className="log-toggle-left">
                     <TerminalIcon/>
-                    <span>Логи yt-dlp</span>
-                    {errorCount > 0 && <span className="log-badge-error">{errorCount} ошиб.</span>}
+                    <span>yt-dlp logs</span>
+                    {errorCount > 0 && <span className="log-badge-error">{errorCount} err.</span>}
                     {downloading && <span className="log-live-dot"/>}
                 </span>
                 <span className="log-toggle-right">
-                    <span className="log-count">{logs.length} строк</span>
+                    <span className="log-count">{logs.length} lines</span>
                     <ChevronIcon open={open}/>
                 </span>
             </button>
@@ -226,11 +226,11 @@ export default function App() {
     // shared
     const [quality, setQuality] = useState<Quality>("best");
     const [mode, setMode] = useState<DownloadMode>("video");
-    const [audioTracks, setAudioTracks] = useState<string[]>([]);   // коды языков аудиодорожек
+    const [audioTracks, setAudioTracks] = useState<string[]>([]);   // audio track language codes
     const [audioLang, setAudioLang] = useState<string | null>(null);
-    const [videoCodecs, setVideoCodecs] = useState<string[]>([]);   // доступные кодеки видео
-    const [audioCodecs, setAudioCodecs] = useState<string[]>([]);   // доступные кодеки аудио
-    const [videoCodec, setVideoCodec] = useState<string | null>(null); // null = авто
+    const [videoCodecs, setVideoCodecs] = useState<string[]>([]);   // available video codecs
+    const [audioCodecs, setAudioCodecs] = useState<string[]>([]);   // available audio codecs
+    const [videoCodec, setVideoCodec] = useState<string | null>(null); // null = auto
     const [audioCodec, setAudioCodec] = useState<string | null>(null);
     const [urlError, setUrlError] = useState("");
     const [downloading, setDownloading] = useState(false);
@@ -375,11 +375,11 @@ export default function App() {
                     }
                 } else {
                     if (!controller.signal.aborted)
-                        setUrlError("Неверный URL — поддерживаются YouTube и Twitch");
+                        setUrlError("Invalid URL — YouTube and Twitch are supported");
                 }
             } catch (e) {
                 if (!controller.signal.aborted) {
-                    const reason = typeof e === "string" && e.trim() ? e : "Не удалось получить информацию о видео";
+                    const reason = typeof e === "string" && e.trim() ? e : "Failed to fetch video info";
                     setUrlError(reason);
                 }
             } finally {
@@ -451,7 +451,7 @@ export default function App() {
             setResult(res);
         } catch (e) {
             const msg = typeof e === "string" ? e : String(e);
-            if (msg !== CANCEL_MSG) setError(msg);   // отмену не показываем как ошибку
+            if (msg !== CANCEL_MSG) setError(msg);   // don't show a cancel as an error
         } finally {
             setDownloading(false);
         }
@@ -472,7 +472,7 @@ export default function App() {
             setPlaylistResult(res);
         } catch (e) {
             const msg = typeof e === "string" ? e : String(e);
-            if (msg !== CANCEL_MSG) setError(msg);   // отмену не показываем как ошибку
+            if (msg !== CANCEL_MSG) setError(msg);   // don't show a cancel as an error
         } finally {
             setDownloading(false);
         }
@@ -489,20 +489,20 @@ export default function App() {
     const hasInfo = youtubeInfo !== null || twitchInfo !== null;
     const videoTitle = youtubeInfo?.title ?? twitchInfo?.title ?? "";
     const videoSub = youtubeInfo
-        ? [`Автор: ${youtubeInfo.author_name}`, youtubeInfo.duration != null ? formatDuration(Number(youtubeInfo.duration)) : ""].filter(Boolean).join("  ·  ")
+        ? [`By ${youtubeInfo.author_name}`, youtubeInfo.duration != null ? formatDuration(Number(youtubeInfo.duration)) : ""].filter(Boolean).join("  ·  ")
         : twitchInfo
             ? [twitchInfo.channel, twitchInfo.is_live ? "🔴 Live" : "", twitchInfo.duration ? formatDuration(twitchInfo.duration) : ""].filter(Boolean).join("  ·  ")
             : "";
 
     const singleDownloadLabel = () => {
-        if (downloading) return <><span className="spinner"/>Загружается…</>;
-        if (twitchInfo?.is_live) return mode === "audio" ? "Записать аудио" : "Записать стрим";
-        return mode === "audio" ? "Скачать аудио" : "Скачать видео";
+        if (downloading) return <><span className="spinner"/>Downloading…</>;
+        if (twitchInfo?.is_live) return mode === "audio" ? "Record audio" : "Record stream";
+        return mode === "audio" ? "Download audio" : "Download video";
     };
 
     const playlistDownloadLabel = () => {
-        if (downloading) return <><span className="spinner"/>Загружается…</>;
-        return mode === "audio" ? "Скачать аудио плейлиста" : "Скачать плейлист";
+        if (downloading) return <><span className="spinner"/>Downloading…</>;
+        return mode === "audio" ? "Download playlist audio" : "Download playlist";
     };
 
     if (!depsReady) {
@@ -529,16 +529,16 @@ export default function App() {
                                     <line x1="12" y1="16" x2="12.01" y2="16"/>
                                 </svg>
                             </div>
-                            <p className="deps-title">Не удалось загрузить компоненты</p>
+                            <p className="deps-title">Failed to load components</p>
                             <p className="deps-sub">{depsError}</p>
-                            <p className="deps-sub">Проверьте интернет и перезапустите приложение</p>
+                            <p className="deps-sub">Check your internet connection and restart the app</p>
                         </>
                     ) : (
                         <>
                             <div className="deps-spinner"/>
-                            <p className="deps-title">Подготовка к работе…</p>
-                            <p className="deps-sub">Скачиваем yt-dlp и ffmpeg — это нужно только при первом
-                                запуске</p>
+                            <p className="deps-title">Getting ready…</p>
+                            <p className="deps-sub">Downloading yt-dlp and ffmpeg — only needed on first
+                                launch</p>
                         </>
                     )}
                 </div>
@@ -563,7 +563,7 @@ export default function App() {
                 <div className="search-icon"><SearchIcon/></div>
                 <input
                     className={`url-input${urlError ? " url-input--error" : ""}`}
-                    placeholder="Вставьте YouTube или Twitch URL…"
+                    placeholder="Paste a YouTube or Twitch URL…"
                     value={url}
                     onChange={(e) => setUrl(e.target.value)}
                     disabled={downloading}
@@ -585,7 +585,7 @@ export default function App() {
             {!hasInfo && !playlistInfo && !urlError && !loadingInfo && (
                 <div className="empty-state">
                     <VideoIcon/>
-                    <p>Поддерживается YouTube и Twitch<br/>Вставьте ссылку выше для начала</p>
+                    <p>YouTube and Twitch are supported<br/>Paste a link above to get started</p>
                 </div>
             )}
 
@@ -621,7 +621,7 @@ export default function App() {
                         <div className="thumb-wrap">
                             <img src={twitchInfo.thumbnail_url} alt={twitchInfo.title}/>
                             <button className="btn-primary btn-primary-link" onClick={async () => await openUrl(url)}>
-                                Открыть в Twitch
+                                Open on Twitch
                             </button>
                         </div>
                     )}
@@ -629,7 +629,7 @@ export default function App() {
                     <div className="divider"/>
 
                     <div className="quality-section">
-                        <p className="quality-label">Формат</p>
+                        <p className="quality-label">Format</p>
                         <div className="mode-toggle">
                             <button className={`mode-btn${mode === "video" ? " active" : ""}`}
                                     onClick={() => setMode("video")} disabled={downloading}>
@@ -638,7 +638,7 @@ export default function App() {
                                     <path d="M15 10l4.553-2.07A1 1 0 0121 8.81v6.38a1 1 0 01-1.447.9L15 14"/>
                                     <rect x="3" y="6" width="12" height="12" rx="2"/>
                                 </svg>
-                                Видео
+                                Video
                             </button>
                             <button className={`mode-btn${mode === "audio" ? " active" : ""}`}
                                     onClick={() => setMode("audio")} disabled={downloading}>
@@ -648,19 +648,19 @@ export default function App() {
                                     <circle cx="6" cy="18" r="3"/>
                                     <circle cx="18" cy="16" r="3"/>
                                 </svg>
-                                Только аудио
+                                Audio only
                             </button>
                         </div>
                     </div>
 
                     {audioTracks.length > 1 && (
                         <div className="quality-section" style={{paddingTop: 0}}>
-                            <p className="quality-label">Аудиодорожка</p>
+                            <p className="quality-label">Audio track</p>
                             <div className="quality-pills">
                                 <button
                                     className={`quality-pill${audioLang === null ? " active" : ""}`}
                                     onClick={() => setAudioLang(null)} disabled={downloading}>
-                                    Авто
+                                    Auto
                                 </button>
                                 {audioTracks.map((code) => (
                                     <button key={code}
@@ -675,11 +675,11 @@ export default function App() {
 
                     {mode === "video" && videoCodecs.length > 1 && (
                         <div className="quality-section" style={{paddingTop: 0}}>
-                            <p className="quality-label">Кодек видео</p>
+                            <p className="quality-label">Video codec</p>
                             <div className="quality-pills">
                                 <button className={`quality-pill${videoCodec === null ? " active" : ""}`}
                                         onClick={() => setVideoCodec(null)} disabled={downloading}>
-                                    Авто
+                                    Auto
                                 </button>
                                 {videoCodecs.map((c) => (
                                     <button key={c}
@@ -694,11 +694,11 @@ export default function App() {
 
                     {audioCodecs.length > 1 && (
                         <div className="quality-section" style={{paddingTop: 0}}>
-                            <p className="quality-label">Кодек аудио</p>
+                            <p className="quality-label">Audio codec</p>
                             <div className="quality-pills">
                                 <button className={`quality-pill${audioCodec === null ? " active" : ""}`}
                                         onClick={() => setAudioCodec(null)} disabled={downloading}>
-                                    Авто
+                                    Auto
                                 </button>
                                 {audioCodecs.map((c) => (
                                     <button key={c}
@@ -713,7 +713,7 @@ export default function App() {
 
                     {mode === "video" && (
                         <div className="quality-section" style={{paddingTop: 0}}>
-                            <p className="quality-label">Качество</p>
+                            <p className="quality-label">Quality</p>
                             <div className="quality-pills">
                                 {QUALITIES.map((q) => (
                                     <button key={q.value}
@@ -727,7 +727,7 @@ export default function App() {
                     )}
 
                     <div className="quality-section" style={{paddingTop: 0}}>
-                        <p className="quality-label">Фрагмент</p>
+                        <p className="quality-label">Clip range</p>
                         <div style={{display: "flex", gap: "8px"}}>
                             <input className="url-input" placeholder="00:00:00" value={startTime}
                                    onChange={(e) => setStartTime(e.target.value)}/>
@@ -736,7 +736,7 @@ export default function App() {
                         </div>
                         {timeError && <p className="url-error">{timeError}</p>}
 
-                        <p className="patch-label">Папка сохранения</p>
+                        <p className="patch-label">Save folder</p>
                         <button className="patch-pill" onClick={async () => {
                             const selected = await open({
                                 directory: true,
@@ -745,7 +745,7 @@ export default function App() {
                             });
                             if (typeof selected === "string") setDownloadPath(selected);
                         }}>
-                            📁 {downloadPath ? downloadPath.split(/[\\/]/).filter(Boolean).pop() : "Загрузки (по умолчанию)"}
+                            📁 {downloadPath ? downloadPath.split(/[\\/]/).filter(Boolean).pop() : "Downloads (default)"}
                         </button>
                     </div>
 
@@ -758,7 +758,7 @@ export default function App() {
                                     <line x1="12" y1="8" x2="12" y2="12"/>
                                     <line x1="12" y1="16" x2="12.01" y2="16"/>
                                 </svg>
-                                Ошибка загрузки
+                                Download failed
                             </div>
                             <p className="error-msg">{error}</p>
                         </div>
@@ -771,7 +771,7 @@ export default function App() {
                                      height="14">
                                     <polyline points="20 6 9 17 4 12"/>
                                 </svg>
-                                Файл сохранён
+                                File saved
                             </div>
                             <p className="result-path">{result.path}</p>
                             <p className="result-size">{result.file_size_mb.toFixed(1)} MB</p>
@@ -785,7 +785,7 @@ export default function App() {
                             {singleDownloadLabel()}
                         </button>
                         {downloading && (
-                            <button className="btn-cancel" onClick={handleCancel}>Отменить</button>
+                            <button className="btn-cancel" onClick={handleCancel}>Cancel</button>
                         )}
                     </div>
                 </div>
@@ -795,11 +795,11 @@ export default function App() {
             {playlistInfo && urlKind === "playlist" && (
                 <div className="card">
                     <div className="card-header">
-                        <span className="badge badge-playlist">Плейлист</span>
+                        <span className="badge badge-playlist">Playlist</span>
                         <h2 className="card-title">{playlistInfo.title}</h2>
                         <p className="card-sub">
                             {playlistInfo.uploader && `${playlistInfo.uploader}  ·  `}
-                            {playlistInfo.count} видео
+                            {playlistInfo.count} videos
                         </p>
                     </div>
 
@@ -815,10 +815,10 @@ export default function App() {
                                     <line x1="3" y1="12" x2="3.01" y2="12"/>
                                     <line x1="3" y1="18" x2="3.01" y2="18"/>
                                 </svg>
-                                <span>Треки плейлиста</span>
+                                <span>Playlist tracks</span>
                             </span>
                             <span className="log-toggle-right">
-                                <span className="log-count">{playlistInfo.entries.length} шт.</span>
+                                <span className="log-count">{playlistInfo.entries.length} tracks</span>
                                 <ChevronIcon open={tracksExpanded}/>
                             </span>
                         </button>
@@ -840,7 +840,7 @@ export default function App() {
                     <div className="divider"/>
 
                     <div className="quality-section">
-                        <p className="quality-label">Формат</p>
+                        <p className="quality-label">Format</p>
                         <div className="mode-toggle">
                             <button className={`mode-btn${mode === "video" ? " active" : ""}`}
                                     onClick={() => setMode("video")} disabled={downloading}>
@@ -849,7 +849,7 @@ export default function App() {
                                     <path d="M15 10l4.553-2.07A1 1 0 0121 8.81v6.38a1 1 0 01-1.447.9L15 14"/>
                                     <rect x="3" y="6" width="12" height="12" rx="2"/>
                                 </svg>
-                                Видео
+                                Video
                             </button>
                             <button className={`mode-btn${mode === "audio" ? " active" : ""}`}
                                     onClick={() => setMode("audio")} disabled={downloading}>
@@ -859,19 +859,19 @@ export default function App() {
                                     <circle cx="6" cy="18" r="3"/>
                                     <circle cx="18" cy="16" r="3"/>
                                 </svg>
-                                Только аудио
+                                Audio only
                             </button>
                         </div>
                     </div>
 
                     {audioTracks.length > 1 && (
                         <div className="quality-section" style={{paddingTop: 0}}>
-                            <p className="quality-label">Аудиодорожка</p>
+                            <p className="quality-label">Audio track</p>
                             <div className="quality-pills">
                                 <button
                                     className={`quality-pill${audioLang === null ? " active" : ""}`}
                                     onClick={() => setAudioLang(null)} disabled={downloading}>
-                                    Авто
+                                    Auto
                                 </button>
                                 {audioTracks.map((code) => (
                                     <button key={code}
@@ -886,7 +886,7 @@ export default function App() {
 
                     {mode === "video" && (
                         <div className="quality-section" style={{paddingTop: 0}}>
-                            <p className="quality-label">Качество</p>
+                            <p className="quality-label">Quality</p>
                             <div className="quality-pills">
                                 {QUALITIES.map((q) => (
                                     <button key={q.value}
@@ -900,7 +900,7 @@ export default function App() {
                     )}
 
                     <div className="quality-section" style={{paddingTop: 0}}>
-                        <p className="patch-label">Папка сохранения</p>
+                        <p className="patch-label">Save folder</p>
                         <button className="patch-pill" onClick={async () => {
                             const selected = await open({
                                 directory: true,
@@ -909,10 +909,10 @@ export default function App() {
                             });
                             if (typeof selected === "string") setDownloadPath(selected);
                         }}>
-                            📁 {downloadPath ? downloadPath.split(/[\\/]/).filter(Boolean).pop() : "Загрузки (по умолчанию)"}
+                            📁 {downloadPath ? downloadPath.split(/[\\/]/).filter(Boolean).pop() : "Downloads (default)"}
                         </button>
-                        <p className="path-hint">Плейлист будет сохранён в отдельную папку внутри выбранного
-                            каталога</p>
+                        <p className="path-hint">The playlist will be saved in its own subfolder inside the
+                            selected directory</p>
                     </div>
 
                     {error && (
@@ -924,7 +924,7 @@ export default function App() {
                                     <line x1="12" y1="8" x2="12" y2="12"/>
                                     <line x1="12" y1="16" x2="12.01" y2="16"/>
                                 </svg>
-                                Ошибка загрузки
+                                Download failed
                             </div>
                             <p className="error-msg">{error}</p>
                         </div>
@@ -937,11 +937,11 @@ export default function App() {
                                      height="14">
                                     <polyline points="20 6 9 17 4 12"/>
                                 </svg>
-                                Плейлист сохранён
+                                Playlist saved
                             </div>
                             <p className="result-path">{playlistResult.dir}</p>
                             <p className="result-size">
-                                {playlistResult.downloaded} файлов · {playlistResult.total_size_mb.toFixed(1)} MB
+                                {playlistResult.downloaded} files · {playlistResult.total_size_mb.toFixed(1)} MB
                             </p>
                         </div>
                     )}
@@ -953,7 +953,7 @@ export default function App() {
                             {playlistDownloadLabel()}
                         </button>
                         {downloading && (
-                            <button className="btn-cancel" onClick={handleCancel}>Отменить</button>
+                            <button className="btn-cancel" onClick={handleCancel}>Cancel</button>
                         )}
                     </div>
                 </div>

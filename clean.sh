@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Очистка артефактов сборки.
+# Clean build artifacts.
 #   ./clean.sh         — dist/, Rust target/ (cargo clean)
-#   ./clean.sh --all   — то же + node_modules/ и Android build/
+#   ./clean.sh --all   — the same, plus node_modules/
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -10,9 +10,8 @@ rm -rf dist
 (cd src-tauri && cargo clean) || true
 
 if [[ "${1:-}" == "--all" ]]; then
-  echo "  + node_modules, android build"
+  echo "  + node_modules"
   rm -rf node_modules
-  rm -rf src-tauri/gen/android/app/build
 fi
 
-echo "✅ Очищено."
+echo "✅ Done."

@@ -81,5 +81,4 @@ Thin wrappers around the commands above, plus a few extras:
 ./build.sh             # release bundle; also installs the binary to /usr/local/bin/flowbit
                         # (--windows cross-builds, --debug, --no-install, --bundles deb,rpm)
 ./clean.sh              # remove dist/ and the Rust target/ (--all also drops node_modules)
-./android.sh init|dev|build  # Android build via `tauri android` (needs Android SDK/NDK/JDK)
 ```

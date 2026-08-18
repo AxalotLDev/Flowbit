@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
-# Сборка релизной десктоп-версии Flowbit.
-#   ./build.sh                    — релизный бандл + установка в /usr/local/bin/flowbit
-#   ./build.sh --windows          — кросс-сборка под Windows (x86_64-pc-windows-gnu)
-#   ./build.sh --debug            — отладочная сборка (быстрее компилируется)
-#   ./build.sh --no-install       — не копировать бинарник в /usr/local/bin
-#   ./build.sh --bundles deb,rpm  — только указанные форматы бандла
-#   ./build.sh <args...>          — прочие аргументы пробрасываются в `tauri build`
+# Build a release desktop version of Flowbit.
+#   ./build.sh                    — release bundle + install to /usr/local/bin/flowbit
+#   ./build.sh --windows          — cross-build for Windows (x86_64-pc-windows-gnu)
+#   ./build.sh --debug            — debug build (compiles faster)
+#   ./build.sh --no-install       — don't copy the binary to /usr/local/bin
+#   ./build.sh --bundles deb,rpm  — only the given bundle formats
+#   ./build.sh <args...>          — other arguments are forwarded to `tauri build`
 set -euo pipefail
 cd "$(dirname "$0")"
 
-# linuxdeploy/appimagetool запускаются как AppImage; на системах без FUSE это
-# падает с "failed to run linuxdeploy". Извлечение вместо FUSE-монтирования решает.
+# linuxdeploy/appimagetool run as an AppImage; on systems without FUSE that
+# fails with "failed to run linuxdeploy". Extraction instead of FUSE-mounting fixes it.
 export APPIMAGE_EXTRACT_AND_RUN=1
 
 run_tauri() {
@@ -18,7 +18,7 @@ run_tauri() {
   else npx tauri "$@"; fi
 }
 
-# --- разбор аргументов ---
+# --- argument parsing ---
 INSTALL=1
 PROFILE_DIR=release
 TARGET_TRIPLE=""
@@ -32,19 +32,19 @@ for a in "$@"; do
   esac
 done
 
-# Каталог таргета (пусто для нативной сборки, "<triple>/" для кросс-сборки)
+# Target directory (empty for a native build, "<triple>/" for a cross-build)
 TARGET_SUBDIR=""
 if [[ -n "$TARGET_TRIPLE" ]]; then
-  echo "⚠  Кросс-сборка Tauri под Windows с Linux экспериментальна и может не собраться."
-  echo "▶ Проверяю Rust-таргет $TARGET_TRIPLE…"
+  echo "⚠  Cross-building Tauri for Windows from Linux is experimental and may fail."
+  echo "▶ Checking Rust target $TARGET_TRIPLE…"
   rustup target add "$TARGET_TRIPLE" >/dev/null 2>&1 || true
   ARGS+=(--target "$TARGET_TRIPLE")
   TARGET_SUBDIR="$TARGET_TRIPLE/"
 fi
 
 echo "▶ build ($PROFILE_DIR${TARGET_TRIPLE:+, $TARGET_TRIPLE})…"
-# Отметка времени: по ней поймём, что бинарник пересобрался именно сейчас
-# (а не остался с прошлой сборки), даже если упадёт сборка какого-то бандла.
+# Timestamp marker: lets us tell whether the binary was actually rebuilt just
+# now (vs. left over from a previous build), even if some bundle step fails.
 MARKER="$(mktemp)"; trap 'rm -f "$MARKER"' EXIT
 
 set +e
@@ -52,53 +52,53 @@ run_tauri build ${ARGS[@]+"${ARGS[@]}"}
 BUILD_RC=$?
 set -e
 if [[ "$BUILD_RC" -ne 0 ]]; then
-  echo "⚠  tauri build завершился с кодом $BUILD_RC — возможно, не собрался какой-то бандл."
-  echo "   Сам бинарник и остальные бандлы могли собраться; продолжаю."
+  echo "⚠  tauri build exited with code $BUILD_RC — some bundle format may have failed."
+  echo "   The binary itself and other bundles may still have built; continuing."
 fi
 
 BUNDLE_DIR="src-tauri/target/${TARGET_SUBDIR}$PROFILE_DIR/bundle"
 echo
-echo "✅ Готово. Артефакты:"
+echo "✅ Done. Artifacts:"
 if [[ -d "$BUNDLE_DIR" ]]; then
   find "$BUNDLE_DIR" -maxdepth 2 -type f \
     \( -name '*.AppImage' -o -name '*.deb' -o -name '*.rpm' \
        -o -name '*.exe' -o -name '*.msi' -o -name '*.dmg' -o -name '*.app' \) \
     -printf '   %p\n' 2>/dev/null || true
 else
-  echo "   (каталог бандлов не найден — см. вывод выше)"
+  echo "   (bundle directory not found — see output above)"
 fi
 
-# --- установка бинарника в /usr/local/bin/flowbit (только нативный Linux) ---
+# --- install the binary to /usr/local/bin/flowbit (native Linux only) ---
 BIN="src-tauri/target/${TARGET_SUBDIR}$PROFILE_DIR/Flowbit"
 DEST="/usr/local/bin/flowbit"
 if [[ "$INSTALL" -eq 1 ]]; then
   if [[ "$(uname)" != "Linux" ]]; then
-    echo "ℹ  Установка в $DEST выполняется только на Linux — пропускаю."
+    echo "ℹ  Installing to $DEST only happens on Linux — skipping."
   elif [[ ! -f "$BIN" ]]; then
-    echo "❌ Бинарник $BIN не найден — компиляция не удалась, установку пропускаю."; exit 1
+    echo "❌ Binary $BIN not found — compilation failed, skipping install."; exit 1
   elif [[ "$BUILD_RC" -ne 0 && ! "$BIN" -nt "$MARKER" ]]; then
-    # Сборка упала И бинарник не пересобирался в этот запуск — значит упала именно
-    # компиляция, а не бандл. Ставить старый бинарник нельзя.
-    echo "❌ Сборка завершилась с ошибкой, свежий бинарник не создан — установку пропускаю."; exit 1
+    # Build failed AND the binary wasn't rebuilt this run — so compilation
+    # itself failed, not just a bundle step. Must not install the stale binary.
+    echo "❌ Build failed, no fresh binary was produced — skipping install."; exit 1
   else
     echo
-    # sudo обычно требует пароль — предупреждаем, если сессия не закеширована.
+    # sudo usually needs a password — warn if the session isn't cached.
     if ! sudo -n true 2>/dev/null; then
-      echo "🔒 Для установки в $DEST нужен sudo — введите пароль ниже."
+      echo "🔒 Installing to $DEST needs sudo — enter your password below."
     fi
-    echo "▶ Устанавливаю $BIN → $DEST…"
-    # Через временный файл + атомарный mv, чтобы замена была целостной.
+    echo "▶ Installing $BIN → $DEST…"
+    # Via a temp file + atomic mv, so the replacement is all-or-nothing.
     TMP="$DEST.new.$$"
     if sudo install -Dm755 "$BIN" "$TMP" && sudo mv -f "$TMP" "$DEST"; then
-      # Проверяем, что файл реально заменён (байт в байт совпадает с новым).
+      # Verify the file was actually replaced (byte-for-byte matches the new one).
       if cmp -s "$BIN" "$DEST"; then
-        echo "✅ Установлено и проверено: $DEST"
+        echo "✅ Installed and verified: $DEST"
       else
-        echo "❌ Файл на месте, но содержимое не совпадает с $BIN"; exit 1
+        echo "❌ File is in place, but its contents don't match $BIN"; exit 1
       fi
     else
       sudo rm -f "$TMP" 2>/dev/null || true
-      echo "❌ Не удалось установить (нет прав sudo?). Вручную:"
+      echo "❌ Install failed (no sudo rights?). Manually:"
       echo "   sudo install -Dm755 \"$BIN\" \"$DEST\""
       exit 1
     fi

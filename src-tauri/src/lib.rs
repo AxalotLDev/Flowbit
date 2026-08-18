@@ -13,7 +13,6 @@ use crate::functions::dependencies::{deps_ready, install_dependencies};
 use crate::functions::playlist::{download_playlist, get_playlist_info, is_playlist_url};
 use tauri::Emitter;
 
-#[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .setup(|app| {

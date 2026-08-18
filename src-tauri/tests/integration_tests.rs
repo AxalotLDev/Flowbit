@@ -17,14 +17,14 @@ fn playlist_url_youtube_with_list_param() {
 
 #[test]
 fn playlist_url_youtube_without_list_param_is_false() {
-    // BUG: /playlist без list= матчится как плейлист
+    // BUG: /playlist without list= still matches as a playlist
     assert!(!is_playlist_url("https://youtube.com/playlist".to_string()));
     assert!(!is_playlist_url("https://www.youtube.com/playlist".to_string()));
 }
 
 #[test]
 fn playlist_url_single_video_with_list_param_is_false() {
-    // watch?v= + list= — это радио/очередь, не плейлист
+    // watch?v= + list= is a radio/queue, not a playlist
     assert!(!is_playlist_url(
         "https://youtube.com/watch?v=VIDEO_ID&list=PLtest".to_string()
     ));
@@ -34,7 +34,7 @@ fn playlist_url_single_video_with_list_param_is_false() {
 
 #[test]
 fn playlist_url_twitch_videos_page() {
-    // twitch.tv/channel/videos — страница видео канала, считается плейлистом
+    // twitch.tv/channel/videos — channel videos page, counted as a playlist
     assert!(is_playlist_url("https://twitch.tv/somechannel/videos".to_string()));
     assert!(is_playlist_url("https://www.twitch.tv/somechannel/videos".to_string()));
 }
@@ -46,7 +46,7 @@ fn playlist_url_twitch_clips_not_playlist() {
 
 #[test]
 fn playlist_url_twitch_single_video_is_false() {
-    // BUG: twitch.tv/videos/12345 матчится через contains("/videos")
+    // BUG: twitch.tv/videos/12345 matches via contains("/videos")
     assert!(!is_playlist_url("https://twitch.tv/videos/12345".to_string()));
     assert!(!is_playlist_url("https://twitch.tv/channel/v/12345".to_string()));
     assert!(!is_playlist_url("https://clips.twitch.tv/someclip".to_string()));
@@ -116,7 +116,7 @@ fn time_range_err_start_after_end() {
 
 #[test]
 fn time_range_err_start_exceeds_duration_with_default_end() {
-    // BUG: start=60s > duration=30s, end=00:00:00 → проходит валидацию
+    // BUG: start=60s > duration=30s, end=00:00:00 → passes validation
     assert!(validate_time_range(
         Some("00:01:00".into()),
         Some("00:00:00".into()),
@@ -169,7 +169,7 @@ fn youtube_url_rejects_invalid() {
 
 #[test]
 fn twitch_url_various_formats() {
-    // Regex матчит только конкретные паттерны: videos/ID, channel/v/ID, clips/
+    // Regex matches only specific patterns: videos/ID, channel/v/ID, clips/
     assert!(is_twitch_url("https://twitch.tv/videos/12345".to_string()));
     assert!(is_twitch_url("https://twitch.tv/channel/v/12345".to_string()));
     assert!(is_twitch_url("https://clips.twitch.tv/someclip".to_string()));
@@ -177,19 +177,19 @@ fn twitch_url_various_formats() {
 
 #[test]
 fn twitch_url_rejects_channel_home() {
-    // Домашняя страница канала НЕ матчится regex — это ограничение regex
+    // Channel homepage does NOT match the regex — a regex limitation
     assert!(!is_twitch_url("https://twitch.tv/somechannel".to_string()));
 }
 
 #[test]
 fn twitch_url_trims_whitespace() {
-    // is_twitch_url делает trim(), is_youtube_url — нет
+    // is_twitch_url trims, is_youtube_url does not
     assert!(is_twitch_url("  https://twitch.tv/videos/12345  ".to_string()));
 }
 
 #[test]
 fn youtube_url_does_not_trim() {
-    // BUG: is_youtube_url не тримит, is_twitch_url тримит
+    // BUG: is_youtube_url doesn't trim, is_twitch_url does
     assert!(!is_youtube_url("  https://youtube.com/watch?v=test  ".to_string()));
 }
 
@@ -210,7 +210,7 @@ fn time_secs_rejects_invalid() {
     assert!(parse_time_to_secs("").is_none());
     assert!(parse_time_to_secs("abc").is_none());
     assert!(parse_time_to_secs("00:00").is_none());
-    // "0:00:00" — 3 части, парсится успешно (не требует zero-padding)
+    // "0:00:00" — 3 parts, parses fine (no zero-padding required)
     assert_eq!(parse_time_to_secs("0:00:00"), Some(0));
     assert!(parse_time_to_secs("00:00:00:00").is_none());
     assert!(parse_time_to_secs("00:60:00").is_none());
@@ -223,32 +223,32 @@ fn time_secs_rejects_invalid() {
 
 #[test]
 fn section_changed_no_trim_needed() {
-    // Оба дефолта → обрезка не нужна
+    // Both defaults → no trim needed
     assert!(!section_changed("00:00:00", "00:00:00", Some(120)));
-    // end >= duration → обрезка не нужна (видео короче запрошенного конца)
+    // end >= duration → no trim needed (video shorter than requested end)
     assert!(!section_changed("00:00:00", "02:00:00", Some(120)));
 }
 
 #[test]
 fn section_changed_trim_needed() {
-    // start > 0 → обрезка нужна
+    // start > 0 → trim needed
     assert!(section_changed("00:01:00", "00:00:00", Some(120)));
-    // end < duration → обрезка нужна (150s < 299s)
+    // end < duration → trim needed (150s < 299s)
     assert!(section_changed("00:00:00", "00:02:30", Some(300)));
 }
 
 #[test]
 fn section_changed_start_exceeds_duration() {
-    // BUG: start > duration → true, ffmpeg упадёт с пустым файлом
+    // BUG: start > duration → true, ffmpeg will fail with an empty file
     let result = section_changed("00:01:00", "00:00:00", Some(30));
-    assert!(result); // задокументированный баг
+    assert!(result); // documented bug
 }
 
 #[test]
 fn section_changed_unparseable_end_returns_true() {
-    // BUG: невалидный end → true, лишний вызов ffmpeg
+    // BUG: invalid end → true, an unnecessary ffmpeg call
     let result = section_changed("00:00:00", "invalid", Some(120));
-    assert!(result); // задокументированный баг
+    assert!(result); // documented bug
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -263,7 +263,7 @@ fn decode_output_utf8() {
 
 #[test]
 fn decode_output_cp1251_fallback() {
-    // "Привет" в cp1251 — не валидный UTF-8
+    // "Привет" (Cyrillic "hello") in cp1251 — not valid UTF-8
     let cp1251 = [0xCF, 0xF0, 0xE8, 0xE2, 0xE5, 0xF2];
     assert_eq!(decode_output(&cp1251), "Привет");
 }

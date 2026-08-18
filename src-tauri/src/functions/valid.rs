@@ -38,12 +38,12 @@ pub fn validate_time_range(
     }
 
     if end_sec > 0 && start_sec >= end_sec {
-        return Err("Начало должно быть меньше конца".into());
+        return Err("Start must be earlier than end".into());
     }
 
     if let Some(max) = max_duration {
         if end_sec > max {
-            return Err("Конец превышает длительность видео".into());
+            return Err("End exceeds the video's duration".into());
         }
     }
 
@@ -52,7 +52,7 @@ pub fn validate_time_range(
 
 fn parse_time_strict(t: &str) -> Result<u64, String> {
     if !TIME_RE.is_match(t) {
-        return Err("Формат времени должен быть HH:MM:SS (например 00:05:30)".into());
+        return Err("Time format must be HH:MM:SS (e.g. 00:05:30)".into());
     }
 
     let parts: Vec<u64> = t.split(':').map(|p| p.parse::<u64>().unwrap()).collect();
@@ -60,7 +60,7 @@ fn parse_time_strict(t: &str) -> Result<u64, String> {
     let (h, m, s) = (parts[0], parts[1], parts[2]);
 
     if m >= 60 || s >= 60 {
-        return Err("Минуты и секунды должны быть меньше 60".into());
+        return Err("Minutes and seconds must be less than 60".into());
     }
 
     Ok(h * 3600 + m * 60 + s)
