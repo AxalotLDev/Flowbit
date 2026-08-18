@@ -12,7 +12,6 @@ static LIBS_PATH: OnceLock<String> = OnceLock::new();
 /// экран загрузки, а не «зависшее» пустое окно.
 pub static DEPS_READY: AtomicBool = AtomicBool::new(false);
 
-/// Tauri-команда: проверить, скачаны ли уже библиотеки (для стартового экрана).
 #[tauri::command]
 pub fn deps_ready() -> bool {
     DEPS_READY.load(Ordering::SeqCst)
@@ -150,8 +149,6 @@ pub async fn download_quickjs(libs_dir: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// Версия сборок ffbinaries, откуда берём ffprobe (в этом теге есть ассеты для
-/// всех нужных платформ).
 const FFPROBE_BUILD_VERSION: &str = "6.1";
 
 /// Платформенный слаг ffbinaries для текущей ОС/арх. ffbinaries публикует каждый

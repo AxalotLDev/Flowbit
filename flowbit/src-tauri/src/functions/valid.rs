@@ -1,11 +1,10 @@
 use once_cell::sync::Lazy;
 use regex::Regex;
 
-// Компилируем регулярки один раз, а не при каждом вызове команды.
 static YOUTUBE_RE: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"^(https?://)?(www\.)?(youtube\.com|youtu\.be)/.+$").unwrap());
 static TWITCH_RE: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"^https?://(www\.)?twitch\.tv/videos/\d+/?$").unwrap());
+    Lazy::new(|| Regex::new(r"^https?://(www\.)?(twitch\.tv/(?:videos/\d+|[\w-]+/v/\d+|clips/[\w-]+)|clips\.twitch\.tv/[\w-]+)$").unwrap());
 static TIME_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"^\d{2}:\d{2}:\d{2}$").unwrap());
 
 #[tauri::command]

@@ -116,7 +116,6 @@ async fn wait_cancellable(
     }
 }
 
-/// Запускает ffmpeg с поддержкой мгновенной отмены.
 pub async fn run_ffmpeg(args: Vec<String>) -> Result<std::process::ExitStatus, String> {
     let mut child = new_command(&ffmpeg())
         .args(&args)
@@ -276,7 +275,6 @@ pub async fn read_printed_path(path_file: &Path) -> Option<String> {
         .map(String::from)
 }
 
-/// Путь для обрезанного файла: `<stem>_cut.<ext>` рядом с исходным.
 fn clipped_path(file: &Path) -> PathBuf {
     let stem = file.file_stem().unwrap_or_default().to_string_lossy();
     let ext = file.extension().unwrap_or_default().to_string_lossy();
@@ -294,7 +292,6 @@ fn vcodec_filter(codec: Option<&str>) -> Option<&'static str> {
     }
 }
 
-/// yt-dlp-фильтр по кодеку аудио для нашего короткого имени.
 fn acodec_filter(codec: Option<&str>) -> Option<&'static str> {
     match codec {
         Some("aac") => Some("[acodec^=mp4a]"),
@@ -415,7 +412,6 @@ fn canon_acodec(acodec: &str) -> Option<&'static str> {
     }
 }
 
-/// Доступные кодеки видео в ролике (наши короткие имена, в фиксированном порядке).
 pub fn parse_video_codecs(json: &serde_json::Value) -> Vec<String> {
     let mut found = std::collections::HashSet::new();
     if let Some(formats) = json["formats"].as_array() {
@@ -436,7 +432,6 @@ pub fn parse_video_codecs(json: &serde_json::Value) -> Vec<String> {
         .collect()
 }
 
-/// Доступные кодеки аудио в ролике (наши короткие имена, в фиксированном порядке).
 pub fn parse_audio_codecs(json: &serde_json::Value) -> Vec<String> {
     let mut found = std::collections::HashSet::new();
     if let Some(formats) = json["formats"].as_array() {
@@ -569,7 +564,7 @@ pub async fn fetch_yt_meta(url: &str, app: Option<AppHandle>) -> YtMeta {
     }
 }
 
-fn parse_time_to_secs(t: &str) -> Option<u64> {
+pub fn parse_time_to_secs(t: &str) -> Option<u64> {
     let parts: Vec<&str> = t.split(':').collect();
     if parts.len() != 3 {
         return None;
@@ -664,8 +659,6 @@ async fn stream_lines(reader: impl tokio::io::AsyncRead + Unpin, app: Option<App
     }
 }
 
-/// Запускает yt-dlp, стримит stdout и stderr как события "ytdlp-log",
-/// возвращает ExitStatus.
 pub async fn run_ytdlp_status(
     args: Vec<String>,
     error_format: String,
@@ -711,8 +704,6 @@ pub async fn run_ytdlp_status(
     Ok(status)
 }
 
-/// Запускает yt-dlp, стримит stderr как "ytdlp-log", собирает stdout в память,
-/// возвращает Output (нужен для команд, читающих --print).
 pub async fn run_ytdlp_output(
     args: Vec<String>,
     error_format: String,

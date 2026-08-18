@@ -30,12 +30,10 @@ pub struct PlaylistDownloadResult {
     pub total_size_mb: f64,
 }
 
-/// Returns true when the URL looks like a YouTube/Twitch playlist
 #[tauri::command]
 pub fn is_playlist_url(url: String) -> bool {
     let u = url.trim();
 
-    // Страница плейлиста: youtube.com/playlist?list=...
     let is_playlist_page = u.contains("youtube.com") && u.contains("/playlist");
 
     // list= без конкретного видео. Ссылка на одиночное видео (/watch?v=... или
@@ -48,13 +46,11 @@ pub fn is_playlist_url(url: String) -> bool {
 
     let is_yt_playlist = is_playlist_page || is_list_only;
 
-    // Twitch collection / channel videos page – add more patterns as needed
     let is_twitch_playlist = u.contains("twitch.tv") && u.contains("/videos");
 
     is_yt_playlist || is_twitch_playlist
 }
 
-/// Fetch lightweight playlist metadata using yt-dlp --flat-playlist
 #[tauri::command]
 pub async fn get_playlist_info(url: String) -> Result<PlaylistInfo, String> {
     let args: Vec<String> = vec![
@@ -74,7 +70,6 @@ pub async fn get_playlist_info(url: String) -> Result<PlaylistInfo, String> {
     let text = crate::functions::youtube::decode_output(&output.stdout);
     let mut lines = text.lines();
 
-    // First line contains playlist-level fields
     let first = lines.next().ok_or("Empty playlist response")?;
     let cols: Vec<&str> = first.splitn(7, '\t').collect();
     if cols.len() < 7 {
@@ -85,10 +80,8 @@ pub async fn get_playlist_info(url: String) -> Result<PlaylistInfo, String> {
     let uploader = cols[1].to_string();
     let count: u64 = cols[2].parse().unwrap_or(0);
 
-    // First entry is already in cols[3..7]
     let mut entries = vec![make_entry(cols[3], cols[4], cols[5], cols[6])];
 
-    // Remaining lines
     for line in lines {
         let c: Vec<&str> = line.splitn(7, '\t').collect();
         if c.len() >= 7 {
@@ -96,7 +89,6 @@ pub async fn get_playlist_info(url: String) -> Result<PlaylistInfo, String> {
         }
     }
 
-    // If count was reported as 0, use entries length
     let total = if count == 0 { entries.len() as u64 } else { count };
 
     Ok(PlaylistInfo {
@@ -116,7 +108,6 @@ fn make_entry(id: &str, title: &str, duration: &str, url: &str) -> PlaylistEntry
     }
 }
 
-/// Download an entire playlist (video or audio) into a sub-folder
 #[tauri::command]
 pub async fn download_playlist(
     app: AppHandle,
@@ -190,10 +181,8 @@ pub async fn download_playlist(
         return Err("Playlist download failed — check logs for details".into());
     }
 
-    // Count files and total size in the base_dir (recursively)
     let (downloaded, total_size_mb) = count_downloaded(&base_dir).await;
 
-    // Figure out the playlist sub-folder path by finding newest sub-dir
     let playlist_dir = newest_subdir(&base_dir).await.unwrap_or(base_dir);
 
     Ok(PlaylistDownloadResult {
