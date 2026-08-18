@@ -721,42 +721,31 @@ export default function App() {
                                     </button>
                                 ))}
                             </div>
-
-                            <p style={{marginTop: "20px"}} className="quality-label">Фрагмент</p>
-                            <div style={{display: "flex", gap: "8px"}}>
-                                <input className="url-input" placeholder="00:00:00" value={startTime}
-                                       onChange={(e) => setStartTime(e.target.value)}/>
-                                <input className="url-input" value={endTime}
-                                       onChange={(e) => setEndTime(e.target.value)}/>
-                            </div>
-                            {timeError && <p className="url-error">{timeError}</p>}
-
-                            <p className="patch-label">Папка сохранения</p>
-                            <button className="patch-pill" onClick={async () => {
-                                const selected = await open({
-                                    directory: true,
-                                    multiple: false,
-                                    defaultPath: downloadPath ?? undefined
-                                });
-                                if (typeof selected === "string") setDownloadPath(selected);
-                            }}>
-                                📁 {downloadPath ? downloadPath.split(/[\\/]/).filter(Boolean).pop() : "Загрузки (по умолчанию)"}
-                            </button>
                         </div>
                     )}
 
-                    {mode === "audio" && (
-                        <div className="quality-section" style={{paddingTop: 0}}>
-                            <p style={{marginTop: "1px"}} className="quality-label">Фрагмент</p>
-                            <div style={{display: "flex", gap: "8px"}}>
-                                <input className="url-input" placeholder="00:00:00" value={startTime}
-                                       onChange={(e) => setStartTime(e.target.value)}/>
-                                <input className="url-input" value={endTime}
-                                       onChange={(e) => setEndTime(e.target.value)}/>
-                            </div>
-                            {timeError && <p className="url-error">{timeError}</p>}
+                    <div className="quality-section" style={{paddingTop: 0}}>
+                        <p className="quality-label">Фрагмент</p>
+                        <div style={{display: "flex", gap: "8px"}}>
+                            <input className="url-input" placeholder="00:00:00" value={startTime}
+                                   onChange={(e) => setStartTime(e.target.value)}/>
+                            <input className="url-input" value={endTime}
+                                   onChange={(e) => setEndTime(e.target.value)}/>
                         </div>
-                    )}
+                        {timeError && <p className="url-error">{timeError}</p>}
+
+                        <p className="patch-label">Папка сохранения</p>
+                        <button className="patch-pill" onClick={async () => {
+                            const selected = await open({
+                                directory: true,
+                                multiple: false,
+                                defaultPath: downloadPath ?? undefined
+                            });
+                            if (typeof selected === "string") setDownloadPath(selected);
+                        }}>
+                            📁 {downloadPath ? downloadPath.split(/[\\/]/).filter(Boolean).pop() : "Загрузки (по умолчанию)"}
+                        </button>
+                    </div>
 
                     {error && (
                         <div className="error-box">
