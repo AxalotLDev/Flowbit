@@ -523,14 +523,19 @@ fn extract_error_reason(stderr: &str) -> Option<String> {
 /// Один вызов `yt-dlp -J`. `multi_audio` включает web_embedded-клиент, который
 /// раскрывает мультиязычные дубляжи, но иногда отдаёт неполный ответ (без
 /// duration/формата) — поэтому есть откат на дефолтный клиент.
-async fn run_meta_json(url: &str, multi_audio: bool) -> Result<serde_json::Value, String> {
+async fn run_meta_json(
+    url: &str,
+    multi_audio: bool,
+    extra_args: &[String],
+) -> Result<serde_json::Value, String> {
     let mut args = vec!["-J".to_string(), "--no-playlist".to_string()];
     if multi_audio {
         args.push("--extractor-args".into());
         args.push(YT_MULTI_AUDIO_CLIENT.into());
     }
+    args.extend_from_slice(extra_args);
     args.push(url.to_string());
-    let output = run_ytdlp_output(args, "Failed to fetch info".to_string(), None).await?;
+    let output = spawn_ytdlp_output(&args, "Failed to fetch info", None).await?;
     let stderr_text = decode_output(&output.stderr);
     if !output.status.success() {
         return Err(extract_error_reason(&stderr_text).unwrap_or_else(|| "yt-dlp failed".into()));
@@ -553,7 +558,7 @@ async fn run_meta_json(url: &str, multi_audio: bool) -> Result<serde_json::Value
 /// клиент с несколькими ретраями с задержкой: капча обычно снимается через пару
 /// секунд, поэтому один отказ ещё не значит, что видео недоступно.
 async fn fetch_meta_json_resilient(url: &str) -> Result<serde_json::Value, String> {
-    let mut last_err = match run_meta_json(url, true).await {
+    let mut last_err = match run_meta_json(url, true, &[]).await {
         Ok(j) => return Ok(j),
         Err(e) => e,
     };
@@ -561,9 +566,22 @@ async fn fetch_meta_json_resilient(url: &str) -> Result<serde_json::Value, Strin
         if attempt > 0 {
             tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
         }
-        match run_meta_json(url, false).await {
+        match run_meta_json(url, false, &[]).await {
             Ok(j) => return Ok(j),
             Err(e) => last_err = e,
+        }
+    }
+    // Плейн-ретраи исчерпаны. Если причина — анти-бот проверка YouTube, куки
+    // из установленного браузера ретраями не лечатся, поэтому пробуем их
+    // здесь один раз (а не на каждой из попыток выше — иначе время до
+    // окончательного провала умножается на число попыток).
+    if looks_like_bot_check(&last_err) {
+        if let Some(browser) = *COOKIE_BROWSER {
+            let cookie_args = vec!["--cookies-from-browser".to_string(), browser.to_string()];
+            match run_meta_json(url, false, &cookie_args).await {
+                Ok(j) => return Ok(j),
+                Err(e) => last_err = e,
+            }
         }
     }
     Err(last_err)
@@ -719,11 +737,99 @@ fn default_ytdlp_args() -> Vec<String> {
     ]
 }
 
-pub async fn run_ytdlp_status(
-    args: Vec<String>,
-    error_format: String,
+/// YouTube иногда требует подтверждения "я не бот" для анонимных запросов —
+/// без авторизации это никаким количеством ретраев не обойти, но у yt-dlp
+/// есть `--cookies-from-browser`, который читает уже залогиненную сессию
+/// прямо из установленного браузера пользователя.
+fn looks_like_bot_check(stderr: &str) -> bool {
+    let s = stderr.to_lowercase();
+    s.contains("sign in to confirm") || s.contains("confirm you\u{2019}re not a bot") || s.contains("confirm you're not a bot")
+}
+
+/// Первый браузер с профилем на диске — без участия пользователя и без
+/// настроек. yt-dlp сам находит профиль/куки по умолчанию внутри каждого
+/// браузера, нам нужно только подтвердить, что он вообще установлен.
+/// Проверяется один раз за время работы приложения: раскладка профилей
+/// не меняется на лету.
+fn detect_browser() -> Option<&'static str> {
+    #[cfg(target_os = "windows")]
+    {
+        let local = std::env::var("LOCALAPPDATA").ok()?;
+        let candidates = [
+            ("chrome", format!(r"{local}\Google\Chrome\User Data")),
+            ("edge", format!(r"{local}\Microsoft\Edge\User Data")),
+            ("brave", format!(r"{local}\BraveSoftware\Brave-Browser\User Data")),
+            ("vivaldi", format!(r"{local}\Vivaldi\User Data")),
+        ];
+        for (name, path) in candidates {
+            if Path::new(&path).is_dir() {
+                return Some(name);
+            }
+        }
+        if let Ok(roaming) = std::env::var("APPDATA") {
+            if Path::new(&format!(r"{roaming}\Mozilla\Firefox\Profiles")).is_dir() {
+                return Some("firefox");
+            }
+        }
+        None
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let home = dirs::home_dir()?;
+        let candidates = [
+            ("chrome", home.join("Library/Application Support/Google/Chrome")),
+            ("edge", home.join("Library/Application Support/Microsoft Edge")),
+            ("brave", home.join("Library/Application Support/BraveSoftware/Brave-Browser")),
+            ("vivaldi", home.join("Library/Application Support/Vivaldi")),
+        ];
+        for (name, path) in candidates {
+            if path.is_dir() {
+                return Some(name);
+            }
+        }
+        if home.join("Library/Application Support/Firefox/Profiles").is_dir() {
+            return Some("firefox");
+        }
+        if home.join("Library/Cookies/Cookies.binarycookies").is_file() {
+            return Some("safari");
+        }
+        None
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        let home = dirs::home_dir()?;
+        let config = dirs::config_dir().unwrap_or_else(|| home.join(".config"));
+        let candidates = [
+            ("chrome", config.join("google-chrome")),
+            ("chromium", config.join("chromium")),
+            ("brave", config.join("BraveSoftware/Brave-Browser")),
+            ("vivaldi", config.join("vivaldi")),
+            ("opera", config.join("opera")),
+        ];
+        for (name, path) in candidates {
+            if path.is_dir() {
+                return Some(name);
+            }
+        }
+        if home.join(".mozilla/firefox/profiles.ini").is_file() {
+            return Some("firefox");
+        }
+        None
+    }
+}
+
+static COOKIE_BROWSER: std::sync::LazyLock<Option<&'static str>> =
+    std::sync::LazyLock::new(detect_browser);
+
+fn has_cookie_flag(args: &[String]) -> bool {
+    args.iter().any(|a| a == "--cookies-from-browser")
+}
+
+async fn spawn_ytdlp_status(
+    args: &[String],
+    error_format: &str,
     app: Option<AppHandle>,
-) -> Result<std::process::ExitStatus, String> {
+) -> Result<(std::process::ExitStatus, Vec<String>), String> {
     let default_args = default_ytdlp_args();
 
     let mut child = new_command(&yt_dlp())
@@ -746,22 +852,49 @@ pub async fn run_ytdlp_status(
     });
 
     let h_err = tokio::spawn(async move {
-        if let Some(s) = stderr {
-            stream_lines(s, app_err).await;
+        match stderr {
+            Some(s) => stream_lines(s, app_err).await,
+            None => Vec::new(),
         }
     });
 
     let status = wait_cancellable(&mut child).await?;
 
     let _ = h_out.await;
-    let _ = h_err.await;
+    let err_lines = h_err.await.unwrap_or_default();
 
+    Ok((status, err_lines))
+}
+
+pub async fn run_ytdlp_status(
+    args: Vec<String>,
+    error_format: String,
+    app: Option<AppHandle>,
+) -> Result<std::process::ExitStatus, String> {
+    let (status, err_lines) = spawn_ytdlp_status(&args, &error_format, app.clone()).await?;
+    if status.success() || has_cookie_flag(&args) || is_cancelled() {
+        return Ok(status);
+    }
+    let Some(browser) = *COOKIE_BROWSER else {
+        return Ok(status);
+    };
+    if !looks_like_bot_check(&err_lines.join("\n")) {
+        return Ok(status);
+    }
+    emit_log(
+        &app,
+        &format!("[flowbit] YouTube требует подтверждения \"я не бот\" — пробуем куки из {browser}…"),
+    );
+    let mut retry_args = args;
+    retry_args.push("--cookies-from-browser".into());
+    retry_args.push(browser.into());
+    let (status, _) = spawn_ytdlp_status(&retry_args, &error_format, app).await?;
     Ok(status)
 }
 
-pub async fn run_ytdlp_output(
-    args: Vec<String>,
-    error_format: String,
+async fn spawn_ytdlp_output(
+    args: &[String],
+    error_format: &str,
     app: Option<AppHandle>,
 ) -> Result<std::process::Output, String> {
     let default_args = default_ytdlp_args();
@@ -808,6 +941,31 @@ pub async fn run_ytdlp_output(
     }
 
     Ok(output)
+}
+
+pub async fn run_ytdlp_output(
+    args: Vec<String>,
+    error_format: String,
+    app: Option<AppHandle>,
+) -> Result<std::process::Output, String> {
+    let output = spawn_ytdlp_output(&args, &error_format, app.clone()).await?;
+    if output.status.success() || has_cookie_flag(&args) || is_cancelled() {
+        return Ok(output);
+    }
+    let Some(browser) = *COOKIE_BROWSER else {
+        return Ok(output);
+    };
+    if !looks_like_bot_check(&decode_output(&output.stderr)) {
+        return Ok(output);
+    }
+    emit_log(
+        &app,
+        &format!("[flowbit] YouTube требует подтверждения \"я не бот\" — пробуем куки из {browser}…"),
+    );
+    let mut retry_args = args;
+    retry_args.push("--cookies-from-browser".into());
+    retry_args.push(browser.into());
+    spawn_ytdlp_output(&retry_args, &error_format, app).await
 }
 
 #[tauri::command]
