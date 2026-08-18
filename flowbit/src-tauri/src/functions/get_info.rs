@@ -68,8 +68,11 @@ pub async fn get_youtube_info(app: tauri::AppHandle, url: String) -> Result<Vide
         .to_string();
 
     // Совсем ничего не вытащили (и oembed, и yt-dlp пусты) — только тогда ошибка.
+    // Пробрасываем настоящую причину от yt-dlp (например, "Sign in to confirm
+    // you're not a bot"), а не общую фразу — иначе пользователь не поймёт, что
+    // видео требует авторизации/недоступно, а не что сломалось приложение.
     if title.is_empty() && thumbnail_url.is_empty() {
-        return Err("Failed to fetch video info".into());
+        return Err(meta.error.unwrap_or_else(|| "Failed to fetch video info".into()));
     }
 
     Ok(VideoInfo {

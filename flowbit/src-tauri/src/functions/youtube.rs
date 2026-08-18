@@ -499,67 +499,90 @@ pub struct YtMeta {
     pub title: Option<String>,
     pub author: Option<String>,
     pub thumbnail: Option<String>,
+    /// Причина провала (последняя строка "ERROR: ..." от yt-dlp), если и
+    /// web_embedded, и дефолтный клиент не смогли вернуть метаданные — чтобы
+    /// показать пользователю настоящую причину (например, "Sign in to
+    /// confirm you're not a bot"), а не общую фразу "не удалось получить".
+    pub error: Option<String>,
+}
+
+/// Последняя строка "ERROR: ..." из stderr yt-dlp, если есть — иначе весь
+/// непустой stderr целиком.
+fn extract_error_reason(stderr: &str) -> Option<String> {
+    stderr
+        .lines()
+        .rev()
+        .find(|l| l.contains("ERROR:"))
+        .map(|l| l.trim().to_string())
+        .or_else(|| {
+            let trimmed = stderr.trim();
+            (!trimmed.is_empty()).then(|| trimmed.to_string())
+        })
 }
 
 /// Один вызов `yt-dlp -J`. `multi_audio` включает web_embedded-клиент, который
 /// раскрывает мультиязычные дубляжи, но иногда отдаёт неполный ответ (без
 /// duration/формата) — поэтому есть откат на дефолтный клиент.
-async fn run_meta_json(url: &str, multi_audio: bool) -> Option<serde_json::Value> {
+async fn run_meta_json(url: &str, multi_audio: bool) -> Result<serde_json::Value, String> {
     let mut args = vec!["-J".to_string(), "--no-playlist".to_string()];
     if multi_audio {
         args.push("--extractor-args".into());
         args.push(YT_MULTI_AUDIO_CLIENT.into());
     }
     args.push(url.to_string());
-    let output = run_ytdlp_output(args, "Failed to fetch info".to_string(), None)
-        .await
-        .ok()?;
+    let output = run_ytdlp_output(args, "Failed to fetch info".to_string(), None).await?;
+    let stderr_text = decode_output(&output.stderr);
     if !output.status.success() {
-        return None;
+        return Err(extract_error_reason(&stderr_text).unwrap_or_else(|| "yt-dlp failed".into()));
     }
-    let json = serde_json::from_str::<serde_json::Value>(&decode_output(&output.stdout)).ok()?;
+    let json = serde_json::from_str::<serde_json::Value>(&decode_output(&output.stdout))
+        .map_err(|e| format!("Invalid yt-dlp output: {e}"))?;
     // При неудачной экстракции (в т.ч. капча «not a bot») yt-dlp печатает "null"
     // и выходит с кодом 0. Это не метаданные — считаем провалом, чтобы сработал
     // откат на другой клиент, а не тихо получить duration = null (00:00:00).
     if !json.is_object() {
-        return None;
+        return Err(
+            extract_error_reason(&stderr_text).unwrap_or_else(|| "yt-dlp returned no metadata".into())
+        );
     }
-    Some(json)
+    Ok(json)
 }
 
 /// Пытается получить валидный JSON метаданных, устойчиво к капче «not a bot».
 /// Сначала web_embedded (раскрывает дубляжи); если пусто/капча — дефолтный
 /// клиент с несколькими ретраями с задержкой: капча обычно снимается через пару
 /// секунд, поэтому один отказ ещё не значит, что видео недоступно.
-async fn fetch_meta_json_resilient(url: &str) -> Option<serde_json::Value> {
-    if let Some(j) = run_meta_json(url, true).await {
-        return Some(j);
-    }
+async fn fetch_meta_json_resilient(url: &str) -> Result<serde_json::Value, String> {
+    let mut last_err = match run_meta_json(url, true).await {
+        Ok(j) => return Ok(j),
+        Err(e) => e,
+    };
     for attempt in 0..3 {
         if attempt > 0 {
             tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
         }
-        if let Some(j) = run_meta_json(url, false).await {
-            return Some(j);
+        match run_meta_json(url, false).await {
+            Ok(j) => return Ok(j),
+            Err(e) => last_err = e,
         }
     }
-    None
+    Err(last_err)
 }
 
 pub async fn fetch_yt_meta(url: &str, app: Option<AppHandle>) -> YtMeta {
-    let json = fetch_meta_json_resilient(url).await;
-    let Some(json) = json else {
-        let duration = fetch_duration(url).await;
-        if duration.is_none() {
-            emit_log(
-                &app,
-                "[flowbit] Не удалось получить данные видео (возможно, ограничение YouTube «not a bot»). Длительность неизвестна.",
-            );
+    let json = match fetch_meta_json_resilient(url).await {
+        Ok(j) => j,
+        Err(reason) => {
+            let duration = fetch_duration(url).await;
+            if duration.is_none() {
+                emit_log(&app, &format!("[flowbit] Не удалось получить данные видео: {reason}"));
+            }
+            return YtMeta {
+                duration,
+                error: Some(reason),
+                ..Default::default()
+            };
         }
-        return YtMeta {
-            duration,
-            ..Default::default()
-        };
     };
     let s = |k: &str| json[k].as_str().filter(|v| !v.is_empty()).map(String::from);
     let mut duration = json["duration"].as_f64().map(|d| d as u64);
@@ -574,6 +597,7 @@ pub async fn fetch_yt_meta(url: &str, app: Option<AppHandle>) -> YtMeta {
         title: s("title").or_else(|| s("fulltitle")),
         author: s("uploader").or_else(|| s("channel")).or_else(|| s("uploader_id")),
         thumbnail: s("thumbnail"),
+        error: None,
     }
 }
 
@@ -661,8 +685,12 @@ fn emit_log(app: &Option<AppHandle>, line: &str) {
 /// decode_output. В отличие от tokio `.lines()` (только UTF-8, обрывается на
 /// первой не-UTF-8 строке), это не теряет логи и корректно показывает кириллицу
 /// из cp1251-вывода yt-dlp на Windows.
-async fn stream_lines(reader: impl tokio::io::AsyncRead + Unpin, app: Option<AppHandle>) {
+async fn stream_lines(
+    reader: impl tokio::io::AsyncRead + Unpin,
+    app: Option<AppHandle>,
+) -> Vec<String> {
     let mut segments = BufReader::new(reader).split(b'\n');
+    let mut lines = Vec::new();
     while let Ok(Some(seg)) = segments.next_segment().await {
         let mut line = decode_output(&seg);
         line.retain(|c| c != '\r');
@@ -670,7 +698,9 @@ async fn stream_lines(reader: impl tokio::io::AsyncRead + Unpin, app: Option<App
             line = strip_ansi(&line).into_owned();
         }
         emit_log(&app, &line);
+        lines.push(line);
     }
+    lines
 }
 
 /// Общие флаги для каждого запуска yt-dlp: расположение ffmpeg, JS-рантайм
@@ -747,8 +777,9 @@ pub async fn run_ytdlp_output(
     let app_err = app.clone();
 
     let h_err = tokio::spawn(async move {
-        if let Some(s) = stderr {
-            stream_lines(s, app_err).await;
+        match stderr {
+            Some(s) => stream_lines(s, app_err).await,
+            None => Vec::new(),
         }
     });
 
@@ -758,7 +789,7 @@ pub async fn run_ytdlp_output(
         kill_group(pid);
         return Err(CANCEL_MSG.into());
     }
-    let output = tokio::select! {
+    let mut output = tokio::select! {
         out = child.wait_with_output() => out.map_err(|e| format!("{error_format}: {e}"))?,
         _ = CANCEL.notified() => {
             kill_group(pid);   // убить всю группу, а не только бутлоадер
@@ -766,7 +797,15 @@ pub async fn run_ytdlp_output(
         }
     };
 
-    let _ = h_err.await;
+    // stderr был вычитан построчно в stream_lines (для live-логов), поэтому
+    // output.stderr после wait_with_output пуст — восстанавливаем его из
+    // собранных строк, иначе вызывающий код (twitch.rs, run_meta_json) не
+    // может показать реальную причину ошибки yt-dlp.
+    if let Ok(err_lines) = h_err.await {
+        if !err_lines.is_empty() {
+            output.stderr = err_lines.join("\n").into_bytes();
+        }
+    }
 
     Ok(output)
 }

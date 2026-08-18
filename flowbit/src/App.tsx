@@ -377,9 +377,11 @@ export default function App() {
                     if (!controller.signal.aborted)
                         setUrlError("Неверный URL — поддерживаются YouTube и Twitch");
                 }
-            } catch {
-                if (!controller.signal.aborted)
-                    setUrlError("Не удалось получить информацию о видео");
+            } catch (e) {
+                if (!controller.signal.aborted) {
+                    const reason = typeof e === "string" && e.trim() ? e : "Не удалось получить информацию о видео";
+                    setUrlError(reason);
+                }
             } finally {
                 if (!controller.signal.aborted) setLoadingInfo(false);
             }
