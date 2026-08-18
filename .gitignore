@@ -4,4 +4,4 @@
 /libs/ffmpeg
 /libs/yt-dlp
 /src-tauri/gen/
-.idea/inspectionProfiles/Project_Default.xml
+/.idea
