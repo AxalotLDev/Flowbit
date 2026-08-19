@@ -29,21 +29,30 @@ pub fn validate_time_range(
     };
 
     let end_sec = match end.as_deref() {
-        Some(e) if !e.trim().is_empty() => parse_time_strict(e)?,
-        _ => return Ok(()),
+        Some(e) if !e.trim().is_empty() => Some(parse_time_strict(e)?),
+        _ => None,
     };
 
-    if start_sec == 0 && end_sec == 0 {
+    // No end, or an explicit "00:00:00" end, both mean "play to the end of
+    // the video" — there's no explicit end to compare start against.
+    let end_is_default = matches!(end_sec, None | Some(0));
+
+    if start_sec == 0 && end_is_default {
         return Ok(());
     }
 
-    if end_sec > 0 && start_sec >= end_sec {
-        return Err("Start must be earlier than end".into());
-    }
-
-    if let Some(max) = max_duration {
-        if end_sec > max {
-            return Err("End exceeds the video's duration".into());
+    if let Some(end_sec) = end_sec.filter(|_| !end_is_default) {
+        if start_sec >= end_sec {
+            return Err("Start must be earlier than end".into());
+        }
+        if let Some(max) = max_duration {
+            if end_sec > max {
+                return Err("End exceeds the video's duration".into());
+            }
+        }
+    } else if let Some(max) = max_duration {
+        if start_sec >= max {
+            return Err("Start exceeds the video's duration".into());
         }
     }
 

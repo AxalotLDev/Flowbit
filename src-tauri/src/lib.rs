@@ -11,6 +11,7 @@ use functions::youtube::DownloadState;
 
 use crate::functions::dependencies::{deps_ready, install_dependencies};
 use crate::functions::playlist::{download_playlist, get_playlist_info, is_playlist_url};
+use crate::functions::preview::download_preview;
 use tauri::Emitter;
 
 pub fn run() {
@@ -48,6 +49,7 @@ pub fn run() {
             get_youtube_info,
             get_twitch_info,
             download_video,
+            download_preview,
             download_twitch,
             is_playlist_url,
             get_playlist_info,

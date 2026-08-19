@@ -148,7 +148,12 @@ function extractYouTubeId(url: string): string | null {
 // YouTube rejects the embed because tauri://localhost has no valid Referer
 // (open bug tauri#14422). So show a thumbnail preview instead, and open the
 // actual player in an external browser — a plain <img> isn't subject to this restriction.
-function YouTubePreview({videoId, url}: { videoId: string; url: string }) {
+function YouTubePreview({videoId, url, onDownloadPreview, previewDownloading}: {
+    videoId: string;
+    url: string;
+    onDownloadPreview: () => void;
+    previewDownloading: boolean;
+}) {
     const thumb = `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`;
     return (
         <div className="thumb-wrap">
@@ -158,6 +163,9 @@ function YouTubePreview({videoId, url}: { videoId: string; url: string }) {
                 style={{cursor: "pointer"}}
                 onClick={async () => await openUrl(url)}
             />
+            <button className="btn-primary btn-primary-link" onClick={onDownloadPreview} disabled={previewDownloading}>
+                {previewDownloading ? "Saving preview…" : "⬇ Save preview"}
+            </button>
         </div>
     );
 }
@@ -229,8 +237,8 @@ export default function App() {
     const [audioTracks, setAudioTracks] = useState<string[]>([]);   // audio track language codes
     const [audioLang, setAudioLang] = useState<string | null>(null);
     const [videoCodecs, setVideoCodecs] = useState<string[]>([]);   // available video codecs
-    const [audioCodecs, setAudioCodecs] = useState<string[]>([]);   // available audio codecs
     const [videoCodec, setVideoCodec] = useState<string | null>(null); // null = auto
+    const [audioCodecs, setAudioCodecs] = useState<string[]>([]);   // available audio codecs
     const [audioCodec, setAudioCodec] = useState<string | null>(null);
     const [urlError, setUrlError] = useState("");
     const [downloading, setDownloading] = useState(false);
@@ -238,6 +246,8 @@ export default function App() {
     const [loadingInfo, setLoadingInfo] = useState(false);
     const [downloadPath, setDownloadPath] = useState<string | null>(null);
     const [logs, setLogs] = useState<{ text: string; kind: "error" | "warning" | "success" | "info" }[]>([]);
+    const [previewDownloading, setPreviewDownloading] = useState(false);
+    const [previewResult, setPreviewResult] = useState<DownloadResult | null>(null);
 
     // Binary readiness (yt-dlp/ffmpeg). Show a loading screen until it's ready.
     const [depsReady, setDepsReady] = useState(false);
@@ -312,6 +322,7 @@ export default function App() {
         setUrlError("");
         setResult(null);
         setPlaylistResult(null);
+        setPreviewResult(null);
         setError("");
         // Reset the clip range, otherwise it "sticks" from the previous video
         // when the new one's duration can't be resolved (common on Windows).
@@ -403,6 +414,7 @@ export default function App() {
         setUrlError("");
         setResult(null);
         setPlaylistResult(null);
+        setPreviewResult(null);
         setError("");
         setLoadingInfo(false);
         setDownloadPath(null);
@@ -477,6 +489,27 @@ export default function App() {
             setDownloading(false);
         }
     }, [url, playlistInfo, quality, mode, downloadPath, downloading]);
+
+    const handleDownloadPreview = useCallback(async (thumbUrl: string, fallbackUrl?: string) => {
+        if (previewDownloading) return;
+        setError("");
+        setPreviewResult(null);
+        setPreviewDownloading(true);
+        try {
+            const res = await invoke<DownloadResult>("download_preview", {
+                url: thumbUrl,
+                fallbackUrl: fallbackUrl ?? null,
+                title: youtubeInfo?.title ?? twitchInfo?.title ?? "",
+                path: downloadPath ?? null,
+            });
+            setPreviewResult(res);
+        } catch (e) {
+            const msg = typeof e === "string" ? e : String(e);
+            setError(msg);
+        } finally {
+            setPreviewDownloading(false);
+        }
+    }, [previewDownloading, youtubeInfo, twitchInfo, downloadPath]);
 
     const handleCancel = useCallback(async () => {
         try {
@@ -614,7 +647,17 @@ export default function App() {
                     {youtubeInfo && (() => {
                         const videoId = extractYouTubeId(url);
                         if (!videoId) return null;
-                        return <YouTubePreview videoId={videoId} url={url}/>;
+                        return (
+                            <YouTubePreview
+                                videoId={videoId}
+                                url={url}
+                                previewDownloading={previewDownloading}
+                                onDownloadPreview={() => handleDownloadPreview(
+                                    `https://i.ytimg.com/vi/${videoId}/maxresdefault.jpg`,
+                                    `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
+                                )}
+                            />
+                        );
                     })()}
 
                     {twitchInfo?.thumbnail_url && (
@@ -622,6 +665,13 @@ export default function App() {
                             <img src={twitchInfo.thumbnail_url} alt={twitchInfo.title}/>
                             <button className="btn-primary btn-primary-link" onClick={async () => await openUrl(url)}>
                                 Open on Twitch
+                            </button>
+                            <button
+                                className="btn-primary btn-primary-link"
+                                onClick={() => handleDownloadPreview(twitchInfo.thumbnail_url!)}
+                                disabled={previewDownloading}
+                            >
+                                {previewDownloading ? "Saving preview…" : "⬇ Save preview"}
                             </button>
                         </div>
                     )}
@@ -775,6 +825,20 @@ export default function App() {
                             </div>
                             <p className="result-path">{result.path}</p>
                             <p className="result-size">{result.file_size_mb.toFixed(1)} MB</p>
+                        </div>
+                    )}
+
+                    {previewResult && (
+                        <div className="result-box">
+                            <div className="result-title">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14"
+                                     height="14">
+                                    <polyline points="20 6 9 17 4 12"/>
+                                </svg>
+                                Preview saved
+                            </div>
+                            <p className="result-path">{previewResult.path}</p>
+                            <p className="result-size">{previewResult.file_size_mb.toFixed(1)} MB</p>
                         </div>
                     )}
 
