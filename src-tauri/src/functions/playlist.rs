@@ -34,21 +34,38 @@ pub struct PlaylistDownloadResult {
 pub fn is_playlist_url(url: String) -> bool {
     let u = url.trim();
 
-    let is_playlist_page = u.contains("youtube.com") && u.contains("/playlist");
-
     // list= without a specific video. A link to a single video (/watch?v=...
     // or youtu.be/<id>) carrying &list=... (radio, "watch later") counts as a
-    // single video, not a playlist.
+    // single video, not a playlist. A bare /playlist path with no list= param
+    // isn't a resolvable playlist either.
     let points_to_single_video =
         (u.contains("watch") && u.contains("v=")) || u.contains("youtu.be");
-    let is_list_only =
+    let is_yt_playlist =
         u.contains("youtube.com") && u.contains("list=") && !points_to_single_video;
 
-    let is_yt_playlist = is_playlist_page || is_list_only;
-
-    let is_twitch_playlist = u.contains("twitch.tv") && u.contains("/videos");
+    let is_twitch_playlist = is_twitch_videos_page(u);
 
     is_yt_playlist || is_twitch_playlist
+}
+
+/// True for a Twitch channel's videos listing (`twitch.tv/<channel>/videos`),
+/// which is a playlist. A single VOD link (`twitch.tv/videos/<id>`) merely
+/// contains "/videos" as a substring too, so this checks path segments
+/// instead of using `.contains("/videos")`.
+fn is_twitch_videos_page(u: &str) -> bool {
+    let Some(idx) = u.find("twitch.tv/") else {
+        return false;
+    };
+    let rest = &u[idx + "twitch.tv/".len()..];
+    let segments: Vec<&str> = rest
+        .split(['?', '#'])
+        .next()
+        .unwrap_or("")
+        .split('/')
+        .filter(|s| !s.is_empty())
+        .collect();
+
+    matches!(segments.as_slice(), [channel, "videos"] if *channel != "videos")
 }
 
 #[tauri::command]
