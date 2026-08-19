@@ -1,6 +1,6 @@
 use crate::functions::youtube::{
-    cleanup_temp, file_mb, network_args, quality_to_format, resolve_out_dir, run_ytdlp_output,
-    run_ytdlp_status, DownloadMode, Quality,
+    cleanup_temp, file_mb, network_args, quality_to_audio_format, quality_to_format,
+    resolve_out_dir, run_ytdlp_output, run_ytdlp_status, DownloadMode, Quality,
 };
 use serde::Serialize;
 use std::path::PathBuf;
@@ -165,7 +165,7 @@ pub async fn download_playlist(
         DownloadMode::Audio => {
             args.extend([
                 "-f".into(),
-                "bestaudio".into(),
+                quality_to_audio_format(quality.unwrap_or(Quality::Best)),
                 "-x".into(),
                 "--audio-format".into(),
                 "mp3".into(),

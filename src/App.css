@@ -24,6 +24,20 @@ body {
     color: var(--text);
     font-family: -apple-system, BlinkMacSystemFont, "Inter", sans-serif;
     min-height: 100vh;
+    /* Dragging inside a native window (no browser chrome) reads as "selecting
+       UI text" instead of window drag — disable selection app-wide, then opt
+       specific content back in below (inputs, logs, paths users may copy). */
+    user-select: none;
+    -webkit-user-select: none;
+}
+
+input, textarea,
+.log-line-text,
+.error-msg,
+.result-path,
+.patch-pill {
+    user-select: text;
+    -webkit-user-select: text;
 }
 
 .app {

@@ -267,6 +267,36 @@ pub fn quality_to_format(q: Quality) -> &'static str {
     }
 }
 
+/// yt-dlp bitrate filter for the audio-only tiers, mirroring `quality_to_format`'s
+/// height buckets but for `abr` (average audio bitrate, kbps). Best leaves the
+/// track uncapped; High/Medium/Low cap `abr` at thresholds chosen so each tier
+/// lands on a genuinely different YouTube itag (251/140 ~128k, 250 ~70k, 249/139
+/// ~48-50k); Worst switches from best-audio to worst-audio instead of filtering.
+/// Sources that don't report `abr` (e.g. Twitch's HLS audio) never satisfy the
+/// capped filter, so `build_audio_format`'s uncapped fallback takes over —
+/// there's no separate Twitch-specific path.
+#[inline]
+fn quality_to_audio_base_and_filter(q: Quality) -> (&'static str, &'static str) {
+    match q {
+        Quality::Best => ("ba", ""),
+        Quality::High => ("ba", "[abr<=160]"),
+        Quality::Medium => ("ba", "[abr<=80]"),
+        Quality::Low => ("ba", "[abr<=50]"),
+        Quality::Worst => ("wa", ""),
+    }
+}
+
+/// Standalone quality-only audio selector (no language/codec constraints),
+/// for callers like the playlist downloader that don't offer those pickers.
+pub fn quality_to_audio_format(q: Quality) -> String {
+    let (base, qf) = quality_to_audio_base_and_filter(q);
+    if qf.is_empty() {
+        base.to_string()
+    } else {
+        format!("{base}{qf}/{base}")
+    }
+}
+
 /// YouTube client that surfaces multi-language audio dubs. The default client
 /// only returns the original track; web_embedded returns all dubs. Specify
 /// both so video stays at max quality (up to 4K) while audio covers all languages.
@@ -373,24 +403,33 @@ fn build_video_format(
     prefs.join("/")
 }
 
-/// Format selector for audio-only mode: pick the source track by language
-/// and codec (output container is set separately via --audio-format).
-fn build_audio_format(audio_codec: Option<&str>, audio_lang: Option<&str>) -> String {
+/// Format selector for audio-only mode: pick the source track by quality
+/// tier, language, and codec (output container is set separately via
+/// --audio-format).
+fn build_audio_format(quality: Quality, audio_codec: Option<&str>, audio_lang: Option<&str>) -> String {
     let lang = audio_lang.filter(|l| !l.is_empty());
     let langf = lang.map(|l| format!("[language={l}]")).unwrap_or_default();
     let af = acodec_filter(audio_codec);
+    let (base, qf) = quality_to_audio_base_and_filter(quality);
 
     let mut prefs: Vec<String> = Vec::new();
     if let Some(f) = af {
-        prefs.push(format!("ba{langf}{f}"));
+        prefs.push(format!("{base}{langf}{qf}{f}"));
     }
-    prefs.push(format!("ba{langf}"));
+    prefs.push(format!("{base}{langf}{qf}"));
     if lang.is_some() {
         if let Some(f) = af {
-            prefs.push(format!("ba{f}"));
+            prefs.push(format!("{base}{qf}{f}"));
         }
     }
-    prefs.push("ba".into());
+    prefs.push(format!("{base}{qf}"));
+
+    // Uncapped fallback: sources that don't report `abr` (Twitch) or videos
+    // with no track at/under the requested tier would otherwise match nothing.
+    if !qf.is_empty() {
+        prefs.push(format!("{base}{langf}"));
+        prefs.push(base.to_string());
+    }
 
     prefs.dedup();
     prefs.join("/")
@@ -553,6 +592,18 @@ async fn run_meta_json(
 /// client with a few delayed retries — the captcha usually clears in a
 /// couple seconds, so one failure doesn't mean the video is unavailable.
 async fn fetch_meta_json_resilient(url: &str) -> Result<serde_json::Value, String> {
+    // Skip straight to the cookies that already worked earlier this
+    // session — the video-by-video anonymous-attempt-then-cookie-retry
+    // dance below only needs to happen once per process, not once per video.
+    if let Some(browser) = WORKING_COOKIE_BROWSER.get() {
+        let cookie_args = vec!["--cookies-from-browser".to_string(), (*browser).to_string()];
+        if let Ok(j) = run_meta_json(url, true, &cookie_args).await {
+            return Ok(j);
+        }
+        // Cached browser stopped working (closed profile, cleared cookies) —
+        // fall through to full discovery below.
+    }
+
     let mut last_err = match run_meta_json(url, true, &[]).await {
         Ok(j) => return Ok(j),
         Err(e) => e,
@@ -574,7 +625,10 @@ async fn fetch_meta_json_resilient(url: &str) -> Result<serde_json::Value, Strin
         if let Some(browser) = *COOKIE_BROWSER {
             let cookie_args = vec!["--cookies-from-browser".to_string(), browser.to_string()];
             match run_meta_json(url, false, &cookie_args).await {
-                Ok(j) => return Ok(j),
+                Ok(j) => {
+                    let _ = WORKING_COOKIE_BROWSER.set(browser);
+                    return Ok(j);
+                }
                 Err(e) => last_err = e,
             }
         }
@@ -819,6 +873,25 @@ fn has_cookie_flag(args: &[String]) -> bool {
     args.iter().any(|a| a == "--cookies-from-browser")
 }
 
+/// Once any yt-dlp call in this process needed a specific browser's cookies
+/// to get past YouTube's "not a bot" check, every later call reuses it from
+/// the start. Without this, every single video re-discovers the same wall
+/// from scratch: an anonymous attempt, a scary ERROR line, then a retry —
+/// twice per video (once for metadata, once for the download itself).
+static WORKING_COOKIE_BROWSER: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
+
+/// Prepends the cached working browser's cookies to `args`, unless the
+/// caller already set cookies explicitly.
+fn apply_cached_cookies(args: &mut Vec<String>) {
+    if has_cookie_flag(args) {
+        return;
+    }
+    if let Some(browser) = WORKING_COOKIE_BROWSER.get() {
+        args.push("--cookies-from-browser".into());
+        args.push((*browser).to_string());
+    }
+}
+
 async fn spawn_ytdlp_status(
     args: &[String],
     error_format: &str,
@@ -865,7 +938,9 @@ pub async fn run_ytdlp_status(
     error_format: String,
     app: Option<AppHandle>,
 ) -> Result<std::process::ExitStatus, String> {
-    let (status, err_lines) = spawn_ytdlp_status(&args, &error_format, app.clone()).await?;
+    let mut args = args;
+    apply_cached_cookies(&mut args);
+    let (mut status, err_lines) = spawn_ytdlp_status(&args, &error_format, app.clone()).await?;
     if status.success() || has_cookie_flag(&args) || is_cancelled() {
         return Ok(status);
     }
@@ -882,7 +957,11 @@ pub async fn run_ytdlp_status(
     let mut retry_args = args;
     retry_args.push("--cookies-from-browser".into());
     retry_args.push(browser.into());
-    let (status, _) = spawn_ytdlp_status(&retry_args, &error_format, app).await?;
+    let (retry_status, _) = spawn_ytdlp_status(&retry_args, &error_format, app).await?;
+    status = retry_status;
+    if status.success() {
+        let _ = WORKING_COOKIE_BROWSER.set(browser);
+    }
     Ok(status)
 }
 
@@ -942,7 +1021,9 @@ pub async fn run_ytdlp_output(
     error_format: String,
     app: Option<AppHandle>,
 ) -> Result<std::process::Output, String> {
-    let output = spawn_ytdlp_output(&args, &error_format, app.clone()).await?;
+    let mut args = args;
+    apply_cached_cookies(&mut args);
+    let mut output = spawn_ytdlp_output(&args, &error_format, app.clone()).await?;
     if output.status.success() || has_cookie_flag(&args) || is_cancelled() {
         return Ok(output);
     }
@@ -959,7 +1040,11 @@ pub async fn run_ytdlp_output(
     let mut retry_args = args;
     retry_args.push("--cookies-from-browser".into());
     retry_args.push(browser.into());
-    spawn_ytdlp_output(&retry_args, &error_format, app).await
+    output = spawn_ytdlp_output(&retry_args, &error_format, app).await?;
+    if output.status.success() {
+        let _ = WORKING_COOKIE_BROWSER.set(browser);
+    }
+    Ok(output)
 }
 
 #[tauri::command]
@@ -986,7 +1071,15 @@ pub async fn download_video(
 
     if matches!(mode, Some(DownloadMode::Audio)) {
         return download_audio(
-            &url, &out_dir, start, end, duration, audio_lang, audio_codec, app,
+            &url,
+            &out_dir,
+            quality.unwrap_or(Quality::Best),
+            start,
+            end,
+            duration,
+            audio_lang,
+            audio_codec,
+            app,
         )
         .await;
     }
@@ -1117,6 +1210,7 @@ pub async fn download_video(
 async fn download_audio(
     url: &str,
     out_dir: &Path,
+    quality: Quality,
     start: Option<String>,
     end: Option<String>,
     duration: Option<u64>,
@@ -1161,7 +1255,7 @@ async fn download_audio(
     };
     let mut args: Vec<String> = vec![
         "-f".into(),
-        build_audio_format(ac, audio_lang.as_deref()),
+        build_audio_format(quality, ac, audio_lang.as_deref()),
         "-x".into(),
         "--audio-format".into(),
         out_audio_format.into(),
@@ -1258,5 +1352,40 @@ mod decode_tests {
     #[test]
     fn ascii_ok() {
         assert_eq!(decode_output(b"[download] 50%"), "[download] 50%");
+    }
+}
+
+#[cfg(test)]
+mod audio_quality_tests {
+    use super::{build_audio_format, quality_to_audio_format, Quality};
+
+    #[test]
+    fn best_has_no_bitrate_cap() {
+        assert_eq!(build_audio_format(Quality::Best, None, None), "ba");
+        assert_eq!(quality_to_audio_format(Quality::Best), "ba");
+    }
+
+    #[test]
+    fn tiers_cap_abr_with_uncapped_fallback() {
+        assert_eq!(build_audio_format(Quality::High, None, None), "ba[abr<=160]/ba");
+        assert_eq!(build_audio_format(Quality::Medium, None, None), "ba[abr<=80]/ba");
+        assert_eq!(build_audio_format(Quality::Low, None, None), "ba[abr<=50]/ba");
+        assert_eq!(quality_to_audio_format(Quality::High), "ba[abr<=160]/ba");
+        assert_eq!(quality_to_audio_format(Quality::Medium), "ba[abr<=80]/ba");
+        assert_eq!(quality_to_audio_format(Quality::Low), "ba[abr<=50]/ba");
+    }
+
+    #[test]
+    fn worst_uses_worst_audio_selector() {
+        assert_eq!(build_audio_format(Quality::Worst, None, None), "wa");
+        assert_eq!(quality_to_audio_format(Quality::Worst), "wa");
+    }
+
+    #[test]
+    fn tier_combines_with_language_and_codec() {
+        assert_eq!(
+            build_audio_format(Quality::Medium, Some("opus"), Some("ru")),
+            "ba[language=ru][abr<=80][acodec^=opus]/ba[language=ru][abr<=80]/ba[abr<=80][acodec^=opus]/ba[abr<=80]/ba[language=ru]/ba"
+        );
     }
 }
