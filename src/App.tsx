@@ -84,6 +84,14 @@ const QUALITIES: { value: Quality; label: string }[] = [
     {value: "worst", label: "Worst"},
 ];
 
+const AUDIO_QUALITIES: { value: Quality; label: string }[] = [
+    {value: "best", label: "Best"},
+    {value: "high", label: "High"},
+    {value: "medium", label: "Medium"},
+    {value: "low", label: "Low"},
+    {value: "worst", label: "Worst"},
+];
+
 // Human-readable codec names (short names come from the backend).
 const VCODEC_NAMES: Record<string, string> = {h264: "H.264", vp9: "VP9", av1: "AV1"};
 const ACODEC_NAMES: Record<string, string> = {aac: "AAC", opus: "Opus"};
@@ -305,6 +313,29 @@ export default function App() {
         };
     }, []);
 
+    // Tauri on Linux (WebKitGTK) has no app menu, so there's no native Edit
+    // menu wiring standard editing accelerators — Ctrl+Z/Ctrl+Shift+Z/Ctrl+Y
+    // do nothing in text inputs unless we invoke them explicitly.
+    // execCommand is deprecated for rich editing, but WebKitGTK still honors
+    // it for plain <input>/<textarea> undo/redo, which is all we need here.
+    useEffect(() => {
+        const handleKeyDown = (e: KeyboardEvent) => {
+            const target = e.target as HTMLElement | null;
+            if (!target || (target.tagName !== "INPUT" && target.tagName !== "TEXTAREA")) return;
+            if (!(e.ctrlKey || e.metaKey)) return;
+            const key = e.key.toLowerCase();
+            if (key === "z") {
+                e.preventDefault();
+                document.execCommand(e.shiftKey ? "redo" : "undo");
+            } else if (key === "y") {
+                e.preventDefault();
+                document.execCommand("redo");
+            }
+        };
+        window.addEventListener("keydown", handleKeyDown);
+        return () => window.removeEventListener("keydown", handleKeyDown);
+    }, []);
+
     // Auto-detect URL type and fetch info
     useEffect(() => {
         abortRef.current?.abort();
@@ -335,6 +366,8 @@ export default function App() {
         setAudioCodecs([]);
         setVideoCodec(null);
         setAudioCodec(null);
+        setQuality("best");
+        setMode("video");
 
         const controller = new AbortController();
         abortRef.current = controller;
@@ -427,6 +460,8 @@ export default function App() {
         setAudioCodecs([]);
         setVideoCodec(null);
         setAudioCodec(null);
+        setQuality("best");
+        setMode("video");
     }
 
     const handleDownload = useCallback(async () => {
@@ -776,6 +811,21 @@ export default function App() {
                         </div>
                     )}
 
+                    {mode === "audio" && platform !== "twitch" && (
+                        <div className="quality-section" style={{paddingTop: 0}}>
+                            <p className="quality-label">Audio quality</p>
+                            <div className="quality-pills">
+                                {AUDIO_QUALITIES.map((q) => (
+                                    <button key={q.value}
+                                            className={`quality-pill${quality === q.value ? " active" : ""}`}
+                                            onClick={() => setQuality(q.value)} disabled={downloading}>
+                                        {q.label}
+                                    </button>
+                                ))}
+                            </div>
+                        </div>
+                    )}
+
                     <div className="quality-section" style={{paddingTop: 0}}>
                         <p className="quality-label">Clip range</p>
                         <div style={{display: "flex", gap: "8px"}}>
@@ -953,6 +1003,21 @@ export default function App() {
                             <p className="quality-label">Quality</p>
                             <div className="quality-pills">
                                 {QUALITIES.map((q) => (
+                                    <button key={q.value}
+                                            className={`quality-pill${quality === q.value ? " active" : ""}`}
+                                            onClick={() => setQuality(q.value)} disabled={downloading}>
+                                        {q.label}
+                                    </button>
+                                ))}
+                            </div>
+                        </div>
+                    )}
+
+                    {mode === "audio" && platform !== "twitch" && (
+                        <div className="quality-section" style={{paddingTop: 0}}>
+                            <p className="quality-label">Audio quality</p>
+                            <div className="quality-pills">
+                                {AUDIO_QUALITIES.map((q) => (
                                     <button key={q.value}
                                             className={`quality-pill${quality === q.value ? " active" : ""}`}
                                             onClick={() => setQuality(q.value)} disabled={downloading}>
