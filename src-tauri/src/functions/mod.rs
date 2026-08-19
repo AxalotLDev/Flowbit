@@ -1,3 +1,4 @@
+pub mod cache;
 pub mod dependencies;
 pub mod get_info;
 pub mod playlist;

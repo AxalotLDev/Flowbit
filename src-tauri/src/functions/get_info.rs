@@ -15,7 +15,7 @@ fn client() -> &'static Client {
     })
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 pub struct VideoInfo {
     pub title: String,
     pub author_name: String,
@@ -29,6 +29,11 @@ pub struct VideoInfo {
 
 #[tauri::command]
 pub async fn get_youtube_info(app: tauri::AppHandle, url: String) -> Result<VideoInfo, String> {
+    let key = crate::functions::cache::video_key(&url);
+    if let Some(cached) = crate::functions::cache::VIDEO_INFO_CACHE.get(&key) {
+        return Ok(cached);
+    }
+
     let oembed_url = format!("https://www.youtube.com/oembed?url={}&format=json", url);
 
     // oembed (fast title/author/thumbnail) and a single -J call (duration +
@@ -38,7 +43,6 @@ pub async fn get_youtube_info(app: tauri::AppHandle, url: String) -> Result<Vide
     // instead of failing outright.
     let (oembed_res, meta) =
         tokio::join!(client().get(&oembed_url).send(), fetch_yt_meta(&url, Some(app)));
-
     let oembed_json = match oembed_res {
         Ok(res) if res.status().is_success() => res.json::<serde_json::Value>().await.ok(),
         _ => None,
@@ -76,7 +80,7 @@ pub async fn get_youtube_info(app: tauri::AppHandle, url: String) -> Result<Vide
         return Err(meta.error.unwrap_or_else(|| "Failed to fetch video info".into()));
     }
 
-    Ok(VideoInfo {
+    let info = VideoInfo {
         title,
         author_name,
         thumbnail_url,
@@ -85,11 +89,24 @@ pub async fn get_youtube_info(app: tauri::AppHandle, url: String) -> Result<Vide
         audio_tracks: meta.audio_tracks,
         video_codecs: meta.video_codecs,
         audio_codecs: meta.audio_codecs,
-    })
+    };
+    // Only cache a complete result — oembed can succeed (title/thumbnail)
+    // while the yt-dlp metadata call independently fails, leaving
+    // duration: None. Caching that would lock in a bogus "00:00:00" max
+    // clip length for the full TTL instead of letting the next request retry.
+    if info.duration.is_some() {
+        crate::functions::cache::VIDEO_INFO_CACHE.insert(key, info.clone());
+    }
+    Ok(info)
 }
 
 #[tauri::command]
 pub async fn get_twitch_info(url: String) -> Result<TwitchVideoInfo, String> {
+    let key = crate::functions::cache::video_key(&url);
+    if let Some(cached) = crate::functions::cache::TWITCH_INFO_CACHE.get(&key) {
+        return Ok(cached);
+    }
+
     let json = fetch_json(&url).await?;
 
     let is_live = json["is_live"].as_bool().unwrap_or(false);
@@ -97,7 +114,7 @@ pub async fn get_twitch_info(url: String) -> Result<TwitchVideoInfo, String> {
     let video_codecs = crate::functions::youtube::parse_video_codecs(&json);
     let audio_codecs = crate::functions::youtube::parse_audio_codecs(&json);
 
-    Ok(TwitchVideoInfo {
+    let info = TwitchVideoInfo {
         title: json["title"].as_str().unwrap_or("Twitch VOD").into(),
         channel: json["uploader"]
             .as_str()
@@ -116,5 +133,11 @@ pub async fn get_twitch_info(url: String) -> Result<TwitchVideoInfo, String> {
         audio_tracks,
         video_codecs,
         audio_codecs,
-    })
+    };
+    // Live entries have no fixed duration/view-count — don't lock in
+    // ephemeral data for the TTL window.
+    if !is_live {
+        crate::functions::cache::TWITCH_INFO_CACHE.insert(key, info.clone());
+    }
+    Ok(info)
 }

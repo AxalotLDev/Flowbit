@@ -589,8 +589,8 @@ async fn run_meta_json(
 
 /// Tries to get valid metadata JSON, resilient to the "not a bot" captcha.
 /// web_embedded first (surfaces dubs); if empty/captcha'd, the default
-/// client with a few delayed retries — the captcha usually clears in a
-/// couple seconds, so one failure doesn't mean the video is unavailable.
+/// client with a few retries back-to-back — no artificial delay between
+/// them (speed over letting the captcha "clear itself").
 async fn fetch_meta_json_resilient(url: &str) -> Result<serde_json::Value, String> {
     // Skip straight to the cookies that already worked earlier this
     // session — the video-by-video anonymous-attempt-then-cookie-retry
@@ -608,28 +608,30 @@ async fn fetch_meta_json_resilient(url: &str) -> Result<serde_json::Value, Strin
         Ok(j) => return Ok(j),
         Err(e) => e,
     };
-    for attempt in 0..3 {
-        if attempt > 0 {
-            tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
-        }
+    for _ in 0..3 {
         match run_meta_json(url, false, &[]).await {
             Ok(j) => return Ok(j),
             Err(e) => last_err = e,
         }
     }
     // Plain retries exhausted. If the cause is YouTube's anti-bot check,
-    // retries won't fix it regardless of browser cookies, so try them here
-    // exactly once (not on every attempt above — that would multiply the
-    // time to a final failure).
+    // retries won't fix it regardless of browser cookies, so try every
+    // detected browser's cookies here exactly once each (not on every
+    // attempt above — that would multiply the time to a final failure).
     if looks_like_bot_check(&last_err) {
-        if let Some(browser) = *COOKIE_BROWSER {
-            let cookie_args = vec!["--cookies-from-browser".to_string(), browser.to_string()];
+        for browser in COOKIE_BROWSERS.iter() {
+            let cookie_args = vec!["--cookies-from-browser".to_string(), (*browser).to_string()];
             match run_meta_json(url, false, &cookie_args).await {
                 Ok(j) => {
                     let _ = WORKING_COOKIE_BROWSER.set(browser);
                     return Ok(j);
                 }
-                Err(e) => last_err = e,
+                Err(e) => {
+                    last_err = e;
+                    if !looks_like_bot_check(&last_err) {
+                        break;
+                    }
+                }
             }
         }
     }
@@ -652,8 +654,11 @@ pub async fn fetch_yt_meta(url: &str, app: Option<AppHandle>) -> YtMeta {
         }
     };
     let s = |k: &str| json[k].as_str().filter(|v| !v.is_empty()).map(String::from);
+    let is_live = json["is_live"].as_bool().unwrap_or(false);
     let mut duration = json["duration"].as_f64().map(|d| d as u64);
-    if duration.is_none() {
+    // A live stream has no fixed duration — respawning yt-dlp just to get
+    // "NA" back again wastes a subprocess call.
+    if duration.is_none() && !is_live {
         duration = fetch_duration(url).await;
     }
     YtMeta {
@@ -795,79 +800,96 @@ fn looks_like_bot_check(stderr: &str) -> bool {
     s.contains("sign in to confirm") || s.contains("confirm you\u{2019}re not a bot") || s.contains("confirm you're not a bot")
 }
 
-/// First browser with a profile on disk — no user involvement, no settings.
-/// yt-dlp finds each browser's default profile/cookies itself; we only need
-/// to confirm it's installed at all. Checked once per process run: profile
-/// layout doesn't change at runtime.
-fn detect_browser() -> Option<&'static str> {
+/// Every profile found on disk, most-likely-to-work first — Firefox doesn't
+/// depend on the OS keyring to decrypt cookies (Chromium-family browsers do,
+/// via libsecret/Keychain/DPAPI, and that key store isn't always reachable,
+/// e.g. no keyring daemon in the session), so it's checked first. The rest
+/// follow in roughly descending popularity. yt-dlp only understands these
+/// browser names for `--cookies-from-browser`: brave, chrome, chromium,
+/// edge, firefox, opera, safari, vivaldi, whale.
+/// Checked once per process run: profile layout doesn't change at runtime.
+fn detect_browsers() -> Vec<&'static str> {
+    let mut found = Vec::new();
+
     #[cfg(target_os = "windows")]
     {
-        let local = std::env::var("LOCALAPPDATA").ok()?;
-        let candidates = [
-            ("chrome", format!(r"{local}\Google\Chrome\User Data")),
-            ("edge", format!(r"{local}\Microsoft\Edge\User Data")),
-            ("brave", format!(r"{local}\BraveSoftware\Brave-Browser\User Data")),
-            ("vivaldi", format!(r"{local}\Vivaldi\User Data")),
-        ];
-        for (name, path) in candidates {
-            if Path::new(&path).is_dir() {
-                return Some(name);
-            }
-        }
         if let Ok(roaming) = std::env::var("APPDATA") {
             if Path::new(&format!(r"{roaming}\Mozilla\Firefox\Profiles")).is_dir() {
-                return Some("firefox");
+                found.push("firefox");
+            }
+            if Path::new(&format!(r"{roaming}\Opera Software\Opera Stable")).is_dir() {
+                found.push("opera");
             }
         }
-        None
+        if let Ok(local) = std::env::var("LOCALAPPDATA") {
+            let candidates = [
+                ("chrome", format!(r"{local}\Google\Chrome\User Data")),
+                ("edge", format!(r"{local}\Microsoft\Edge\User Data")),
+                ("brave", format!(r"{local}\BraveSoftware\Brave-Browser\User Data")),
+                ("chromium", format!(r"{local}\Chromium\User Data")),
+                ("vivaldi", format!(r"{local}\Vivaldi\User Data")),
+                ("whale", format!(r"{local}\Naver\Naver Whale\User Data")),
+            ];
+            for (name, path) in candidates {
+                if Path::new(&path).is_dir() {
+                    found.push(name);
+                }
+            }
+        }
     }
     #[cfg(target_os = "macos")]
     {
-        let home = dirs::home_dir()?;
-        let candidates = [
-            ("chrome", home.join("Library/Application Support/Google/Chrome")),
-            ("edge", home.join("Library/Application Support/Microsoft Edge")),
-            ("brave", home.join("Library/Application Support/BraveSoftware/Brave-Browser")),
-            ("vivaldi", home.join("Library/Application Support/Vivaldi")),
-        ];
-        for (name, path) in candidates {
-            if path.is_dir() {
-                return Some(name);
+        if let Some(home) = dirs::home_dir() {
+            if home.join("Library/Application Support/Firefox/Profiles").is_dir() {
+                found.push("firefox");
+            }
+            let candidates = [
+                ("chrome", home.join("Library/Application Support/Google/Chrome")),
+                ("edge", home.join("Library/Application Support/Microsoft Edge")),
+                ("brave", home.join("Library/Application Support/BraveSoftware/Brave-Browser")),
+                ("chromium", home.join("Library/Application Support/Chromium")),
+                ("vivaldi", home.join("Library/Application Support/Vivaldi")),
+                ("opera", home.join("Library/Application Support/com.operasoftware.Opera")),
+            ];
+            for (name, path) in candidates {
+                if path.is_dir() {
+                    found.push(name);
+                }
+            }
+            if home.join("Library/Cookies/Cookies.binarycookies").is_file() {
+                found.push("safari");
             }
         }
-        if home.join("Library/Application Support/Firefox/Profiles").is_dir() {
-            return Some("firefox");
-        }
-        if home.join("Library/Cookies/Cookies.binarycookies").is_file() {
-            return Some("safari");
-        }
-        None
     }
     #[cfg(all(unix, not(target_os = "macos")))]
     {
-        let home = dirs::home_dir()?;
-        let config = dirs::config_dir().unwrap_or_else(|| home.join(".config"));
-        let candidates = [
-            ("chrome", config.join("google-chrome")),
-            ("chromium", config.join("chromium")),
-            ("brave", config.join("BraveSoftware/Brave-Browser")),
-            ("vivaldi", config.join("vivaldi")),
-            ("opera", config.join("opera")),
-        ];
-        for (name, path) in candidates {
-            if path.is_dir() {
-                return Some(name);
+        if let Some(home) = dirs::home_dir() {
+            if home.join(".mozilla/firefox/profiles.ini").is_file() {
+                found.push("firefox");
+            }
+            let config = dirs::config_dir().unwrap_or_else(|| home.join(".config"));
+            let candidates = [
+                ("chrome", config.join("google-chrome")),
+                ("chromium", config.join("chromium")),
+                ("edge", config.join("microsoft-edge")),
+                ("brave", config.join("BraveSoftware/Brave-Browser")),
+                ("vivaldi", config.join("vivaldi")),
+                ("opera", config.join("opera")),
+                ("whale", config.join("naver-whale")),
+            ];
+            for (name, path) in candidates {
+                if path.is_dir() {
+                    found.push(name);
+                }
             }
         }
-        if home.join(".mozilla/firefox/profiles.ini").is_file() {
-            return Some("firefox");
-        }
-        None
     }
+
+    found
 }
 
-static COOKIE_BROWSER: std::sync::LazyLock<Option<&'static str>> =
-    std::sync::LazyLock::new(detect_browser);
+static COOKIE_BROWSERS: std::sync::LazyLock<Vec<&'static str>> =
+    std::sync::LazyLock::new(detect_browsers);
 
 fn has_cookie_flag(args: &[String]) -> bool {
     args.iter().any(|a| a == "--cookies-from-browser")
@@ -944,23 +966,30 @@ pub async fn run_ytdlp_status(
     if status.success() || has_cookie_flag(&args) || is_cancelled() {
         return Ok(status);
     }
-    let Some(browser) = *COOKIE_BROWSER else {
-        return Ok(status);
-    };
     if !looks_like_bot_check(&err_lines.join("\n")) {
         return Ok(status);
     }
-    emit_log(
-        &app,
-        &format!("[flowbit] YouTube requires \"I'm not a bot\" confirmation — trying cookies from {browser}…"),
-    );
-    let mut retry_args = args;
-    retry_args.push("--cookies-from-browser".into());
-    retry_args.push(browser.into());
-    let (retry_status, _) = spawn_ytdlp_status(&retry_args, &error_format, app).await?;
-    status = retry_status;
-    if status.success() {
-        let _ = WORKING_COOKIE_BROWSER.set(browser);
+    // Try every detected browser's cookies in turn — a bot-check failure
+    // from one (e.g. Chrome's keyring-locked cookie DB) doesn't mean
+    // another (e.g. Firefox) will fail the same way.
+    for browser in COOKIE_BROWSERS.iter() {
+        emit_log(
+            &app,
+            &format!("[flowbit] YouTube requires \"I'm not a bot\" confirmation — trying cookies from {browser}…"),
+        );
+        let mut retry_args = args.clone();
+        retry_args.push("--cookies-from-browser".into());
+        retry_args.push((*browser).into());
+        let (retry_status, retry_err_lines) =
+            spawn_ytdlp_status(&retry_args, &error_format, app.clone()).await?;
+        status = retry_status;
+        if status.success() {
+            let _ = WORKING_COOKIE_BROWSER.set(browser);
+            return Ok(status);
+        }
+        if !looks_like_bot_check(&retry_err_lines.join("\n")) {
+            return Ok(status);
+        }
     }
     Ok(status)
 }
@@ -1027,25 +1056,29 @@ pub async fn run_ytdlp_output(
     if output.status.success() || has_cookie_flag(&args) || is_cancelled() {
         return Ok(output);
     }
-    let Some(browser) = *COOKIE_BROWSER else {
-        return Ok(output);
-    };
     if !looks_like_bot_check(&decode_output(&output.stderr)) {
         return Ok(output);
     }
-    emit_log(
-        &app,
-        &format!("[flowbit] YouTube requires \"I'm not a bot\" confirmation — trying cookies from {browser}…"),
-    );
-    let mut retry_args = args;
-    retry_args.push("--cookies-from-browser".into());
-    retry_args.push(browser.into());
-    output = spawn_ytdlp_output(&retry_args, &error_format, app).await?;
-    if output.status.success() {
-        let _ = WORKING_COOKIE_BROWSER.set(browser);
+    for browser in COOKIE_BROWSERS.iter() {
+        emit_log(
+            &app,
+            &format!("[flowbit] YouTube requires \"I'm not a bot\" confirmation — trying cookies from {browser}…"),
+        );
+        let mut retry_args = args.clone();
+        retry_args.push("--cookies-from-browser".into());
+        retry_args.push((*browser).into());
+        output = spawn_ytdlp_output(&retry_args, &error_format, app.clone()).await?;
+        if output.status.success() {
+            let _ = WORKING_COOKIE_BROWSER.set(browser);
+            return Ok(output);
+        }
+        if !looks_like_bot_check(&decode_output(&output.stderr)) {
+            return Ok(output);
+        }
     }
     Ok(output)
 }
+
 
 #[tauri::command]
 pub async fn download_video(

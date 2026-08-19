@@ -1,9 +1,60 @@
+use flowbit_lib::functions::cache::{playlist_key, video_key};
 use flowbit_lib::functions::playlist::is_playlist_url;
 use flowbit_lib::functions::valid::{is_twitch_url, is_youtube_url, validate_time_range};
 use flowbit_lib::functions::youtube::{
     decode_output, merge_container, parse_time_to_secs, quality_to_format, section_changed,
     Quality,
 };
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// cache key normalization
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn video_key_ignores_tracking_params() {
+    // Same video, shared-link tracking param differs — must hit the same key.
+    assert_eq!(
+        video_key("https://www.youtube.com/watch?v=abc123&si=xyz"),
+        video_key("https://www.youtube.com/watch?v=abc123&si=other")
+    );
+}
+
+#[test]
+fn video_key_ignores_timestamp_and_list_params() {
+    assert_eq!(
+        video_key("https://www.youtube.com/watch?v=abc123&t=42s&list=PLfoo"),
+        video_key("https://www.youtube.com/watch?v=abc123")
+    );
+}
+
+#[test]
+fn video_key_distinguishes_different_videos() {
+    assert_ne!(
+        video_key("https://www.youtube.com/watch?v=abc123"),
+        video_key("https://www.youtube.com/watch?v=def456")
+    );
+}
+
+#[test]
+fn playlist_key_ignores_index_param_keeps_list() {
+    assert_eq!(
+        playlist_key("https://www.youtube.com/playlist?list=PLfoo&index=3"),
+        playlist_key("https://www.youtube.com/playlist?list=PLfoo")
+    );
+}
+
+#[test]
+fn playlist_key_distinguishes_different_playlists() {
+    assert_ne!(
+        playlist_key("https://www.youtube.com/playlist?list=PLfoo"),
+        playlist_key("https://www.youtube.com/playlist?list=PLbar")
+    );
+}
+
+#[test]
+fn video_key_falls_back_to_trimmed_url_when_unparseable() {
+    assert_eq!(video_key("  not a url  "), "not a url".to_string());
+}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // is_playlist_url

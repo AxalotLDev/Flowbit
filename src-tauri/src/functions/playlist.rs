@@ -70,6 +70,11 @@ fn is_twitch_videos_page(u: &str) -> bool {
 
 #[tauri::command]
 pub async fn get_playlist_info(url: String) -> Result<PlaylistInfo, String> {
+    let key = crate::functions::cache::playlist_key(&url);
+    if let Some(cached) = crate::functions::cache::PLAYLIST_INFO_CACHE.get(&key) {
+        return Ok(cached);
+    }
+
     let args: Vec<String> = vec![
         "--flat-playlist".into(),
         "--print".into(),
@@ -108,12 +113,14 @@ pub async fn get_playlist_info(url: String) -> Result<PlaylistInfo, String> {
 
     let total = if count == 0 { entries.len() as u64 } else { count };
 
-    Ok(PlaylistInfo {
+    let info = PlaylistInfo {
         title: playlist_title,
         uploader,
         count: total,
         entries,
-    })
+    };
+    crate::functions::cache::PLAYLIST_INFO_CACHE.insert(key, info.clone());
+    Ok(info)
 }
 
 fn make_entry(id: &str, title: &str, duration: &str, url: &str) -> PlaylistEntry {
