@@ -10,6 +10,7 @@ dependencies = [
  "encoding_rs",
  "libc",
  "once_cell",
+ "parking_lot",
  "regex",
  "reqwest 0.12.28",
  "serde",
